@@ -1,0 +1,8 @@
+requests
+pandas
+biopython
+matplotlib
+seaborn
+mygene
+pyyaml
+streamlit
