@@ -1,4 +1,4 @@
-# TF-Explorer v1.1 – ChIP-seq Promoter Scanner
+# TF-Explorer v1.2 – ChIP-seq Promoter Scanner
 
 A general Python command-line tool and **Streamlit Web App** to analyze transcription factor (TF) binding sites for **ANY GENE**.
 
