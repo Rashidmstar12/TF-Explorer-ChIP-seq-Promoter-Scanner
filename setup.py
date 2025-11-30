@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="tf-explorer",
-    version="1.1.0",
+    version="1.2.0",
     author="Rashidmstar12",
     author_email="rashidmstar@pondiuni.ac.in",
     description="A tool to explore TF binding sites for any gene using ENCODE and JASPAR.",

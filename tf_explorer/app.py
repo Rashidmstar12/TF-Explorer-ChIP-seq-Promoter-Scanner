@@ -8,10 +8,11 @@ import shutil
 # Ensure we import the local tf_explorer package, not the installed one
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from tf_explorer import analysis, motifs
+from tf_explorer import analysis, motifs, comparative
 import importlib
 importlib.reload(motifs)
 importlib.reload(analysis)
+importlib.reload(comparative)
 
 # Set page configuration
 st.set_page_config(
@@ -52,6 +53,39 @@ def summarize_experiments(df_stats):
     total_experiments = len(df) # Total files
     
     return n_strict, n_loose, total_strict_peaks, total_loose_peaks, total_experiments, df
+
+def plot_cell_line_comparison(summary_df):
+    """
+    Generates a bar chart comparing binding frequencies across cell lines.
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
+    if summary_df.empty or 'biosample' not in summary_df.columns:
+        return None
+        
+    # Group by biosample
+    # Calculate % of files with strict peaks
+    stats = summary_df.groupby('biosample').agg(
+        total_files=('file_accession', 'count'),
+        files_with_peaks=('num_strict_peaks', lambda x: (x > 0).sum())
+    ).reset_index()
+    
+    stats['binding_rate'] = (stats['files_with_peaks'] / stats['total_files']) * 100
+    
+    # Sort by binding rate
+    stats = stats.sort_values('binding_rate', ascending=False)
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sns.barplot(data=stats, x='biosample', y='binding_rate', ax=ax, palette='viridis')
+    
+    ax.set_title("TF Binding Rate by Cell Line (Strict Window)", fontsize=14)
+    ax.set_ylabel("Binding Rate (% of Files)", fontsize=12)
+    ax.set_xlabel("Cell Line", fontsize=12)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    
+    return fig
 
 def main():
     st.title("🧬 TF-Explorer v1.1 – ChIP-seq Promoter Scanner")
@@ -128,15 +162,25 @@ def main():
         if not st.session_state.encode_results:
             st.warning("No experiments found for the specified TFs.")
         else:
+            # Filter by Cell Line
+            all_biosamples = sorted(list(set(item['biosample'] for item in st.session_state.encode_results)))
+            selected_biosamples = st.multiselect("Filter by Cell Line", all_biosamples, default=all_biosamples)
+            
+            # Filter results based on selection
+            filtered_results = [item for item in st.session_state.encode_results if item['biosample'] in selected_biosamples]
+            
             # Select All Button
-            if st.button("Select All Experiments"):
+            if st.button("Select All Filtered Experiments"):
                 for item in st.session_state.encode_results:
-                    item['Select'] = True
+                    if item['biosample'] in selected_biosamples:
+                        item['Select'] = True
+                    else:
+                        item['Select'] = False
                 st.session_state.editor_key += 1
                 st.rerun()
 
             # Display data editor for selection
-            df = pd.DataFrame(st.session_state.encode_results)
+            df = pd.DataFrame(filtered_results)
             
             # Reorder columns for better visibility
             cols = ['Select', 'tf_name', 'biosample', 'description', 'dataset_accession', 'file_accession', 'assembly']
@@ -391,9 +435,10 @@ Recommendation:
                 # Plots
                 st.subheader("Visualizations")
                 
-                tab1, tab2, tab3 = st.tabs(["Promoter Track", "Biosample Distribution", "TF Binding Counts"])
+                tab1, tab2, tab3, tab4, tab5 = st.tabs(["Promoter Track", "Cell Line Comparison", "TF Comparison", "Biosample Distribution", "TF Binding Counts"])
                 
                 with tab1:
+                    # ... (Existing Promoter Track Code) ...
                     # Interactive Promoter Track
                     hits_path = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
                     motifs_path = os.path.join(out_dir, f"{gene_name}_motif_predictions.csv")
@@ -472,6 +517,141 @@ Recommendation:
                         st.warning("No data to plot.")
 
                 with tab2:
+                    st.markdown("### Cell Line Comparison")
+                    
+                    # Load detailed stats to get cell lines
+                    stats_path_comp = os.path.join(out_dir, f"{gene_name}_experiment_stats.csv")
+                    stats_df_comp = pd.DataFrame()
+                    if os.path.exists(stats_path_comp):
+                        stats_df_comp = pd.read_csv(stats_path_comp)
+                    
+                    # 1. Multi-Cell Line Overview (Existing)
+                    st.markdown("#### Overview: Binding Rates by Cell Line")
+                    # Use detailed stats instead of summary_df
+                    fig_comp = plot_cell_line_comparison(stats_df_comp)
+                    if fig_comp:
+                        st.pyplot(fig_comp)
+                    else:
+                        st.info("Insufficient data for overview.")
+                        
+                    st.divider()
+                    
+                    # 2. Pairwise Comparison (New v1.2)
+                    st.markdown("#### Pairwise Comparison (Advanced)")
+                    st.markdown("Select two or more cell lines to compare binding patterns in detail.")
+                    
+                    if not stats_df_comp.empty and 'biosample' in stats_df_comp.columns:
+                        available_cls = sorted([x for x in stats_df_comp['biosample'].unique() if x != 'Unknown'])
+                        
+                        if len(available_cls) >= 2:
+                            selected_cls = st.multiselect("Select Cell Lines to Compare", available_cls, default=available_cls[:2])
+                            
+                            if st.button("Compare Selected Cell Lines"):
+                                if len(selected_cls) < 2:
+                                    st.error("Please select at least two cell lines.")
+                                else:
+                                    # Run Comparative Analysis
+                                    # Load the hits dataframe first
+                                    hits_path_comp = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
+                                    if os.path.exists(hits_path_comp):
+                                        hits_df_comp = pd.read_csv(hits_path_comp)
+                                        
+                                        # Instantiate with list of cell lines
+                                        comp_analysis = comparative.ComparativeAnalysis(hits_df_comp, selected_cls, gene_name, group_by='biosample')
+                                        
+                                        metrics = comp_analysis.calculate_metrics()
+                                        interpretation = comp_analysis.generate_interpretation(metrics)
+                                        
+                                        st.markdown("##### Results")
+                                        
+                                        # 1. Multi-Track Plot
+                                        st.markdown("**Comparative Binding Tracks**")
+                                        fig_tracks = comp_analysis.plot_comparison(promoter_up, promoter_down)
+                                        st.pyplot(fig_tracks)
+                                        
+                                        # 2. Jaccard Heatmap
+                                        st.markdown("**Similarity Heatmap (Jaccard Index)**")
+                                        fig_heatmap = comp_analysis.plot_jaccard_heatmap(metrics)
+                                        st.pyplot(fig_heatmap)
+                                        
+                                        st.markdown("##### Interpretation")
+                                        st.info(interpretation)
+                                        
+                                        st.markdown("##### Metrics")
+                                        with st.expander("Jaccard Similarity Matrix", expanded=True):
+                                            st.dataframe(metrics['jaccard_matrix'].style.format("{:.2f}"))
+                                            
+                                        with st.expander("Unique Binding Sites (bp)", expanded=True):
+                                            st.caption("Number of base pairs covered uniquely by each cell line (not shared with others).")
+                                            unique_df = pd.DataFrame(list(metrics['unique_bases_counts'].items()), columns=['Cell Line', 'Unique BP'])
+                                            st.bar_chart(unique_df.set_index('Cell Line'))
+                                            
+                                        with st.expander("Full Metrics JSON"):
+                                            safe_metrics = {k: v for k, v in metrics.items() if not isinstance(v, pd.DataFrame)}
+                                            st.json(safe_metrics)
+                                    else:
+                                        st.error("Could not load hits data for comparison.")
+                        else:
+                            st.warning(f"Need at least 2 different cell lines in the results to perform comparison. Found: {available_cls}")
+                            st.info("Tip: Make sure you have selected experiments from at least two different cell lines in the 'Select Experiments' table and clicked 'Run Analysis'.")
+                    else:
+                        st.warning("No biosample data available in the analysis results.")
+
+
+                with tab3:
+                    st.markdown("### TF Comparison")
+                    st.markdown("Compare binding patterns of different Transcription Factors on this gene.")
+                    
+                    hits_path_tf = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
+                    if os.path.exists(hits_path_tf):
+                        hits_df_tf = pd.read_csv(hits_path_tf)
+                        if not hits_df_tf.empty and 'tf' in hits_df_tf.columns:
+                            available_tfs = sorted([x for x in hits_df_tf['tf'].unique()])
+                            
+                            if len(available_tfs) >= 2:
+                                selected_tfs = st.multiselect("Select TFs to Compare", available_tfs, default=available_tfs[:2])
+                                
+                                if st.button("Compare Selected TFs"):
+                                    if len(selected_tfs) < 2:
+                                        st.error("Please select at least two TFs.")
+                                    else:
+                                        # Run Comparative Analysis with group_by='tf'
+                                        comp_analysis_tf = comparative.ComparativeAnalysis(hits_df_tf, selected_tfs, gene_name, group_by='tf')
+                                        
+                                        metrics_tf = comp_analysis_tf.calculate_metrics()
+                                        interpretation_tf = comp_analysis_tf.generate_interpretation(metrics_tf)
+                                        
+                                        st.markdown("##### Results")
+                                        
+                                        # 1. Multi-Track Plot
+                                        st.markdown("**Comparative Binding Tracks**")
+                                        fig_tracks_tf = comp_analysis_tf.plot_comparison(promoter_up, promoter_down)
+                                        st.pyplot(fig_tracks_tf)
+                                        
+                                        # 2. Jaccard Heatmap
+                                        st.markdown("**Similarity Heatmap (Jaccard Index)**")
+                                        fig_heatmap_tf = comp_analysis_tf.plot_jaccard_heatmap(metrics_tf)
+                                        st.pyplot(fig_heatmap_tf)
+                                        
+                                        st.markdown("##### Interpretation")
+                                        st.info(interpretation_tf)
+                                        
+                                        st.markdown("##### Metrics")
+                                        with st.expander("Jaccard Similarity Matrix", expanded=True):
+                                            st.dataframe(metrics_tf['jaccard_matrix'].style.format("{:.2f}"))
+                                            
+                                        with st.expander("Unique Binding Sites (bp)", expanded=True):
+                                            st.caption("Number of base pairs covered uniquely by each TF (not shared with others).")
+                                            unique_tf_df = pd.DataFrame(list(metrics_tf['unique_bases_counts'].items()), columns=['TF', 'Unique BP'])
+                                            st.bar_chart(unique_tf_df.set_index('TF'))
+                            else:
+                                st.warning(f"Need at least 2 different TFs in the results to perform comparison. Found: {available_tfs}")
+                        else:
+                            st.warning("No TF data available.")
+                    else:
+                        st.warning("No analysis results found.")
+
+                with tab4:
                     hits_path = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
                     if os.path.exists(hits_path):
                         hits_df = pd.read_csv(hits_path)
@@ -482,7 +662,7 @@ Recommendation:
                         else:
                             st.info("No biosample data available.")
 
-                with tab3:
+                with tab5:
                     plot_path = os.path.join(out_dir, f"{gene_name}_tf_binding_plot.png")
                     if os.path.exists(plot_path):
                         st.image(plot_path, caption=f"TF Binding Summary for {gene_name}", use_container_width=True)
