@@ -4,14 +4,16 @@ A general Python command-line tool and **Streamlit Web App** to analyze transcri
 
 ## Features
 
+- **Multi-Cell Line Comparison**: Compare binding patterns across multiple cell lines with Jaccard heatmaps and multi-track plots.
+- **Multi-TF Comparison**: Compare different Transcription Factors on the same gene to identify co-binding.
+- **Advanced Visualizations**: Interactive Jaccard Similarity Heatmaps, Stacked Signal Tracks, and Unique Binding Site counts.
 - **ENCODE Integration**: Query and download TF ChIP-seq peaks.
 - **Gene Agnostic**: Works for any human gene (e.g., PWWP2A, TP53, MYC).
-- **Interactive GUI**: User-friendly Streamlit interface.
+- **Interactive GUI**: User-friendly Streamlit interface with flexible multi-select controls.
 - **High-Peak Visualization**: Overlay high-confidence peaks on the promoter track.
 - **Strict & Loose Windows**: Analyze binding in both strict promoter regions and wider (±5kb) windows.
 - **File-Based Counting**: Accurate reporting of total files/samples analyzed.
 - **Motif Analysis**: Predict binding sites using JASPAR PWMs.
-- **Visualization**: Generate plots of binding density and peak locations.
 
 ## Installation
 
