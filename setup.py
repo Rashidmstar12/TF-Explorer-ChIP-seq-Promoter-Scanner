@@ -4,7 +4,7 @@ setup(
     name="tf-explorer",
     version="1.1.0",
     author="Rashidmstar12",
-    author_email="your.email@example.com",
+    author_email="rashidmstar@pondiuni.ac.in",
     description="A tool to explore TF binding sites for any gene using ENCODE and JASPAR.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
