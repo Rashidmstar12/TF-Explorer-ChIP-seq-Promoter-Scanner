@@ -88,7 +88,7 @@ def plot_cell_line_comparison(summary_df):
     return fig
 
 def main():
-    st.title("🧬 TF-Explorer v1.1 – ChIP-seq Promoter Scanner")
+    st.title("🧬 TF-Explorer v1.2 – ChIP-seq Promoter Scanner")
     st.markdown("""
     Analyze transcription factor binding sites for **ANY GENE**.
     1. **Search** for ENCODE ChIP-seq experiments.
