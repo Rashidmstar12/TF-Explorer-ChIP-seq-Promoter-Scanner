@@ -98,6 +98,28 @@ def main():
 
     # --- Sidebar ---
     st.sidebar.header("Configuration")
+    
+    with st.sidebar.expander("ℹ️ How to Use", expanded=False):
+        st.markdown("""
+        **1. Search**
+        - Enter a **Gene Symbol** (e.g., `PWWP2A`).
+        - Enter **Transcription Factors** (e.g., `YY1, CREB1`).
+        - Click **Search ENCODE**.
+        
+        **2. Select Data**
+        - A table of experiments will appear.
+        - **Check the boxes** for the experiments you want to analyze.
+        - You can select multiple cell lines to compare them.
+        
+        **3. Run Analysis**
+        - Click **Run Analysis**.
+        - The tool will download data and check for binding sites in the promoter.
+        
+        **4. Explore Results**
+        - **Promoter Track:** See where peaks are located relative to the TSS.
+        - **Cell Line Comparison:** Compare binding rates and overlaps across tissues.
+        - **TF Comparison:** Compare different TFs on the same gene.
+        """)
 
     # Gene Input
     gene_name = st.sidebar.text_input("Gene Symbol", value="", help="Enter the official gene symbol (e.g., TP53, MYC).")
