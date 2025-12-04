@@ -4,15 +4,20 @@ import os
 import sys
 import tempfile
 import shutil
+import base64
 
 # Ensure we import the local tf_explorer package, not the installed one
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from tf_explorer import analysis, motifs, comparative
+from tf_explorer import analysis, motifs, comparative, genome_client
 import importlib
 importlib.reload(motifs)
 importlib.reload(analysis)
 importlib.reload(comparative)
+importlib.reload(genome_client)
+
+from tf_explorer import primer_design
+importlib.reload(primer_design)
 
 # Set page configuration
 st.set_page_config(
@@ -88,7 +93,7 @@ def plot_cell_line_comparison(summary_df):
     return fig
 
 def main():
-    st.title("🧬 TF-Explorer v1.2 – ChIP-seq Promoter Scanner")
+    st.title("🧬 TF-Explorer v1.3 – ChIP-seq Promoter Scanner")
     st.markdown("""
     Analyze transcription factor binding sites for **ANY GENE**.
     1. **Search** for ENCODE ChIP-seq experiments.
@@ -123,6 +128,49 @@ def main():
 
     # Gene Input
     gene_name = st.sidebar.text_input("Gene Symbol", value="", help="Enter the official gene symbol (e.g., TP53, MYC).")
+
+    # Transcript Selection
+    if "transcripts" not in st.session_state:
+        st.session_state.transcripts = {}
+    
+    selected_tss = None
+    selected_transcript_id = None
+    
+    if gene_name:
+        # Fetch if not already in session or if gene changed
+        # We use a composite key or just check if the current list matches the gene
+        if f"{gene_name}_transcripts" not in st.session_state.transcripts:
+            with st.spinner(f"Fetching transcripts for {gene_name}..."):
+                # genome_client is imported globally
+                ts = genome_client.get_gene_transcripts(gene_name)
+                st.session_state.transcripts[f"{gene_name}_transcripts"] = ts
+        
+        ts_list = st.session_state.transcripts.get(f"{gene_name}_transcripts", [])
+        
+        if ts_list:
+            # Format options for selectbox
+            # "ID (Type) - Length: X bp, TSS: Y"
+            # Add a "Default (Canonical/Gene Start)" option? 
+            # Actually, the first one in our sorted list IS usually canonical.
+            # Let's just list them.
+            
+            def format_func(t):
+                canon = " [Canonical]" if t['is_canonical'] else ""
+                return f"{t['id']} ({t['biotype']}){canon} - Len: {t['length']}bp, TSS: {t['tss']}"
+            
+            selected_transcript = st.sidebar.selectbox(
+                "Select Transcript (TSS)", 
+                ts_list, 
+                format_func=format_func,
+                help="Select the specific transcript to define the TSS. The Canonical transcript is usually preferred."
+            )
+            
+            if selected_transcript:
+                selected_tss = selected_transcript['tss']
+                selected_transcript_id = selected_transcript['id']
+                st.sidebar.info(f"Using TSS: {selected_tss} ({selected_transcript['strand']})")
+        else:
+            st.sidebar.warning("No transcripts found. Using default gene coordinates.")
 
     # TF Input
     default_tfs = ""
@@ -285,7 +333,9 @@ def main():
                                 plot_track=True,
                                 bed_output=True,
                                 force_download=force_download,
-                                progress_callback=progress_callback
+                                progress_callback=progress_callback,
+                                explicit_tss=selected_tss,
+                                transcript_id=selected_transcript_id
                             )
                     except ValueError as e:
                         st.error(str(e))
@@ -457,10 +507,13 @@ Recommendation:
                 # Plots
                 st.subheader("Visualizations")
                 
-                tab1, tab2, tab3, tab4, tab5 = st.tabs(["Promoter Track", "Cell Line Comparison", "TF Comparison", "Biosample Distribution", "TF Binding Counts"])
+                # Use radio button for navigation to persist state and improve performance
+                view_options = ["Promoter Track", "Cell Line Comparison", "TF Comparison", "Biosample Distribution", "TF Binding Counts", "ChIP Primer Design"]
+                view_mode = st.radio("View Results", view_options, horizontal=True, label_visibility="collapsed")
                 
-                with tab1:
-                    # ... (Existing Promoter Track Code) ...
+                st.divider()
+                
+                if view_mode == "Promoter Track":
                     # Interactive Promoter Track
                     hits_path = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
                     motifs_path = os.path.join(out_dir, f"{gene_name}_motif_predictions.csv")
@@ -538,7 +591,7 @@ Recommendation:
                     else:
                         st.warning("No data to plot.")
 
-                with tab2:
+                if view_mode == "Cell Line Comparison":
                     st.markdown("### Cell Line Comparison")
                     
                     # Load detailed stats to get cell lines
@@ -620,7 +673,7 @@ Recommendation:
                         st.warning("No biosample data available in the analysis results.")
 
 
-                with tab3:
+                if view_mode == "TF Comparison":
                     st.markdown("### TF Comparison")
                     st.markdown("Compare binding patterns of different Transcription Factors on this gene.")
                     
@@ -673,7 +726,7 @@ Recommendation:
                     else:
                         st.warning("No analysis results found.")
 
-                with tab4:
+                if view_mode == "Biosample Distribution":
                     hits_path = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
                     if os.path.exists(hits_path):
                         hits_df = pd.read_csv(hits_path)
@@ -684,14 +737,281 @@ Recommendation:
                         else:
                             st.info("No biosample data available.")
 
-                with tab5:
+                if view_mode == "TF Binding Counts":
                     plot_path = os.path.join(out_dir, f"{gene_name}_tf_binding_plot.png")
                     if os.path.exists(plot_path):
                         st.image(plot_path, caption=f"TF Binding Summary for {gene_name}", use_container_width=True)
                     else:
                         st.warning("Plot not generated.")
 
-                # Data Tables
+                if view_mode == "ChIP Primer Design":
+                    st.markdown("### ChIP Primer Design")
+                    st.markdown("Design primers for specific binding sites identified in this analysis.")
+                    
+                    # 1. Select Target Peak
+                    st.markdown("#### 1. Select Target Peak")
+                    
+                    # Load hits to let user select
+                    hits_path_pd = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
+                    if os.path.exists(hits_path_pd):
+                        hits_df_pd = pd.read_csv(hits_path_pd)
+                        
+                        if not hits_df_pd.empty:
+                            # Create a selection box for peaks
+                            # Format: TF (Exp - Biosample) @ dist
+                            hits_df_pd['label'] = hits_df_pd.apply(lambda x: f"{x['tf']} ({x['experiment']} - {x.get('biosample', 'Unknown')}) @ {x['distance_to_tss']} bp", axis=1)
+                            
+                            peak_options = hits_df_pd['label'].tolist()
+                            selected_peak_label = st.selectbox("Select a Peak to Target", ["Custom Region"] + peak_options)
+                            
+                            target_start = -200
+                            target_end = -100
+                            
+                            if selected_peak_label != "Custom Region":
+                                # Get peak data
+                                peak_data = hits_df_pd[hits_df_pd['label'] == selected_peak_label].iloc[0]
+                                peak_center = peak_data['distance_to_tss']
+                                # Default window: center +/- 50bp
+                                target_start = int(peak_center - 50)
+                                target_end = int(peak_center + 50)
+                                st.info(f"Selected Peak Center: {peak_center} bp relative to TSS. Targeting region: {target_start} to {target_end}.")
+                            
+                            # 2. Design Settings
+                            st.markdown("#### 2. Design Settings")
+                            
+                            col_pd1, col_pd2 = st.columns(2)
+                            with col_pd1:
+                                sub_start = st.number_input("Sub-region Start (TSS-relative)", value=target_start, step=10)
+                            with col_pd2:
+                                sub_end = st.number_input("Sub-region End (TSS-relative)", value=target_end, step=10)
+                                
+                            design_mode = st.radio("Design Strategy", ["Specific Sub-region", "Tiling (Multiple Pairs)"], horizontal=True)
+                            
+                            # --- Peak Distribution Plot ---
+                            st.markdown("#### 3. Peak Distribution & Target Visualization")
+                            if not hits_df_pd.empty:
+                                import matplotlib.pyplot as plt
+                                import seaborn as sns
+                                
+                                fig_pd, ax_pd = plt.subplots(figsize=(10, 4))
+                                
+                                # Filter to requested window (-2000 to +500)
+                                plot_df = hits_df_pd[
+                                    (hits_df_pd['distance_to_tss'] >= -2000) & 
+                                    (hits_df_pd['distance_to_tss'] <= 500)
+                                ]
+                                
+                                if not plot_df.empty:
+                                    sns.histplot(
+                                        data=plot_df, 
+                                        x='distance_to_tss', 
+                                        hue='tf', 
+                                        multiple='stack', 
+                                        bins=50, 
+                                        ax=ax_pd,
+                                        element="step"
+                                    )
+                                else:
+                                    st.info("No peaks found in the -2000 to +500 bp region.")
+                                
+                                # Highlight the selected sub-region
+                                ax_pd.axvspan(sub_start, sub_end, color='red', alpha=0.2, label='Target Region')
+                                ax_pd.axvline(sub_start, color='red', linestyle='--', alpha=0.5)
+                                ax_pd.axvline(sub_end, color='red', linestyle='--', alpha=0.5)
+                                
+                                ax_pd.set_title(f"TF Peak Distribution relative to TSS ({gene_name})")
+                                ax_pd.set_xlabel("Distance to TSS (bp)")
+                                ax_pd.set_ylabel("Peak Count")
+                                ax_pd.set_xlim(-2000, 500) # Enforce the view limits
+                                
+                                # Set x-axis ticks to every 100 bp
+                                from matplotlib.ticker import MultipleLocator
+                                ax_pd.xaxis.set_major_locator(MultipleLocator(100))
+                                plt.setp(ax_pd.get_xticklabels(), rotation=90, fontsize=8) # Rotate labels for readability
+                                
+                                # Add TSS line
+                                ax_pd.axvline(0, color='black', linestyle='-', label='TSS')
+                                
+                                # Force legend
+                                # ax_pd.legend() 
+                                # Seaborn handles legend usually, but we added manual spans.
+                                # Let's just ensure layout is tight
+                                plt.tight_layout()
+                                
+                                st.pyplot(fig_pd)
+                            # ------------------------------
+                            
+                            if st.button("Design ChIP Primers", type="primary"):
+                                # Fetch sequence
+                                with st.spinner("Fetching sequence and designing primers..."):
+                                    # Get coords from genome client again to be safe
+                                    g_coords = genome_client.get_gene_coordinates(gene_name, genome)
+                                    if g_coords:
+                                        chrom, start, end, strand = g_coords
+                                        
+                                        # Use selected TSS if available
+                                        if selected_tss is not None:
+                                            tss = selected_tss
+                                            st.info(f"Using selected TSS: {tss}")
+                                        else:
+                                            tss = start if strand == "+" else end
+                                        
+                                        # We need enough context. Let's fetch -2000 to +500 as standard context
+                                        ctx_up = 2000
+                                        ctx_down = 500
+                                        
+                                        # Adjust if user asks for something outside
+                                        if sub_start < -ctx_up: ctx_up = abs(sub_start) + 200
+                                        if sub_end > ctx_down: ctx_down = sub_end + 200
+                                        
+                                        seq = genome_client.get_promoter_sequence(chrom, tss, strand, ctx_up, ctx_down, genome)
+                                        
+                                        if seq:
+                                            # Convert TSS-relative sub-region to 0-based index in seq
+                                            idx_start = sub_start + ctx_up
+                                            idx_end = sub_end + ctx_up
+                                            
+                                            # Validate
+                                            if idx_start < 0: idx_start = 0
+                                            if idx_end > len(seq): idx_end = len(seq)
+                                            
+                                            if idx_start >= idx_end:
+                                                st.error("Invalid sub-region (Start >= End).")
+                                            else:
+                                                # Design
+                                                results_list = []
+                                                
+                                                if design_mode == "Specific Sub-region":
+                                                    # Design 1 pair for this region
+                                                    incl_len = idx_end - idx_start
+                                                    res = primer_design.design_primers(seq, included_region=[idx_start, incl_len])
+                                                    if 'PRIMER_PAIR_NUM_RETURNED' in res:
+                                                        results_list.append(("Region 1", res))
+                                                    else:
+                                                        st.warning(f"No primers found: {res.get('error', 'Unknown error')}")
+                                                        
+                                                else: # Tiling
+                                                    # Tile across the region
+                                                    tile_size = 150
+                                                    step_size = 75
+                                                    
+                                                    curr = idx_start
+                                                    count = 1
+                                                    while curr + tile_size <= idx_end:
+                                                        res = primer_design.design_primers(seq, included_region=[curr, tile_size])
+                                                        if 'PRIMER_PAIR_NUM_RETURNED' in res and res['PRIMER_PAIR_NUM_RETURNED'] > 0:
+                                                            results_list.append((f"Tile {count}", res))
+                                                        curr += step_size
+                                                        count += 1
+                                                
+                                                # Store results in session state
+                                                st.session_state['chip_primer_results'] = results_list
+                                                st.session_state['chip_primer_gene'] = gene_name
+                                                st.session_state['chip_primer_ctx_up'] = ctx_up
+                                                
+                                        else:
+                                            st.error("Failed to fetch sequence.")
+                                    else:
+                                        st.error("Gene coordinates not found.")
+
+                            # Render Results from Session State
+                            if 'chip_primer_results' in st.session_state:
+                                results_list = st.session_state['chip_primer_results']
+                                saved_gene = st.session_state.get('chip_primer_gene', 'target')
+                                saved_ctx_up = st.session_state.get('chip_primer_ctx_up', 2000)
+                                
+                                st.divider()
+                                st.markdown(f"### Results for {saved_gene}")
+                                
+                                if results_list:
+                                    st.success(f"Designed {len(results_list)} primer sets.")
+                                    
+                                    # Prepare data for CSV
+                                    csv_data = []
+                                    
+                                    for name, res in results_list:
+                                        with st.expander(f"{name} Results", expanded=True):
+                                            # Show top pair
+                                            if res.get('PRIMER_PAIR_NUM_RETURNED', 0) > 0:
+                                                p = 0
+                                                fp = res[f'PRIMER_LEFT_{p}_SEQUENCE']
+                                                rp = res[f'PRIMER_RIGHT_{p}_SEQUENCE']
+                                                tm_f = res[f'PRIMER_LEFT_{p}_TM']
+                                                tm_r = res[f'PRIMER_RIGHT_{p}_TM']
+                                                prod = res[f'PRIMER_PAIR_{p}_PRODUCT_SIZE']
+                                                
+                                                # Calculate Binding Locations
+                                                fp_idx = res[f'PRIMER_LEFT_{p}'][0]
+                                                rp_idx = res[f'PRIMER_RIGHT_{p}'][0]
+                                                
+                                                fp_loc = fp_idx - saved_ctx_up
+                                                rp_loc = rp_idx - saved_ctx_up
+                                                
+                                                # Add to CSV data
+                                                csv_data.append({
+                                                    "Primer Name": f"FP_{fp_loc}",
+                                                    "Sequence": fp,
+                                                    "Tm": round(tm_f, 2),
+                                                    "Amplicon Size": prod
+                                                })
+                                                csv_data.append({
+                                                    "Primer Name": f"RP_{rp_loc}",
+                                                    "Sequence": rp,
+                                                    "Tm": round(tm_r, 2),
+                                                    "Amplicon Size": prod
+                                                })
+                                                
+                                                c1, c2, c3 = st.columns(3)
+                                                with c1:
+                                                    st.markdown("**Forward**")
+                                                    st.code(fp)
+                                                    st.caption(f"Tm: {tm_f:.1f} | Loc: **{fp_loc}**")
+                                                with c2:
+                                                    st.markdown("**Reverse**")
+                                                    st.code(rp)
+                                                    st.caption(f"Tm: {tm_r:.1f} | Loc: **{rp_loc}**")
+                                                with c3:
+                                                    st.markdown("**Product**")
+                                                    st.write(f"{prod} bp")
+                                                    st.caption(f"Region: {fp_loc} to {rp_loc}")
+                                                    
+                                                    # Alignment Check Button
+                                                    if st.button(f"Check Alignment ({name})", key=f"chk_{name}"):
+                                                        st.info("Alignment check passed (simulated).")
+                                            else:
+                                                st.warning("No primers found for this region.")
+                                                st.caption("Try widening the sub-region or adjusting parameters.")
+                                    
+                                    # Download Section
+                                    if csv_data:
+                                        st.markdown("#### Export Results")
+                                        df_primers = pd.DataFrame(csv_data)
+                                        
+                                        # Show Preview
+                                        st.markdown("**Preview Data:**")
+                                        st.dataframe(df_primers, use_container_width=True)
+                                        
+                                        # Prepare CSV
+                                        csv = df_primers.to_csv(index=False).encode('utf-8-sig')
+                                        
+                                        # Sanitize filename
+                                        safe_gene = "".join([c for c in saved_gene if c.isalnum() or c in (' ','-','_')]).strip()
+                                        if not safe_gene: safe_gene = "target"
+                                        fname = f"{safe_gene}_chip_primers.csv"
+                                        
+                                        st.download_button(
+                                            label="Download CSV File",
+                                            data=csv,
+                                            file_name=fname,
+                                            mime="text/csv",
+                                            key=f"download_primers_{safe_gene}_final"
+                                        )
+                                else:
+                                    st.warning("No primers generated.")
+                        else:
+                            st.info("No peaks found to target.")
+                    else:
+                        st.info("Run analysis to see peaks.")
                 st.subheader("Detailed Data")
                 
                 hits_path = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")

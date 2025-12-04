@@ -6,3 +6,4 @@ seaborn
 mygene
 pyyaml
 streamlit
+primer3-py

@@ -48,7 +48,9 @@ def analyze_gene(
     plot_track: bool = False,
     force_download: bool = False,
     random_seed: int = 42,
-    progress_callback=None
+    progress_callback=None,
+    explicit_tss: int = None,
+    transcript_id: str = None
 ):
     """
     Main analysis pipeline.
@@ -76,16 +78,28 @@ def analyze_gene(
     logger.info(f"Starting analysis for {gene_name}...")
     
     # 1. Get Gene Coordinates
-    coords = genome_client.get_gene_coordinates(gene_name, genome)
-    if not coords:
-        msg = f"Could not find gene coordinates for '{gene_name}'. Please check the gene symbol (e.g., 'DNMT3B' instead of 'dnmtb')."
-        logger.error(msg)
-        raise ValueError(msg)
-    chrom, start, end, strand = coords
-    
-    # Calculate TSS
-    tss = start if strand == "+" else end
-    logger.info(f"TSS for {gene_name} is at {chrom}:{tss} ({strand})")
+    if explicit_tss is not None:
+        # Use provided TSS
+        # We still need chrom and strand, so we fetch coords but override TSS
+        coords = genome_client.get_gene_coordinates(gene_name, genome)
+        if not coords:
+             msg = f"Could not find gene coordinates for '{gene_name}'."
+             logger.error(msg)
+             raise ValueError(msg)
+        chrom, start, end, strand = coords
+        tss = explicit_tss
+        logger.info(f"Using explicit TSS for {gene_name} (Transcript {transcript_id}): {chrom}:{tss} ({strand})")
+    else:
+        coords = genome_client.get_gene_coordinates(gene_name, genome)
+        if not coords:
+            msg = f"Could not find gene coordinates for '{gene_name}'. Please check the gene symbol (e.g., 'DNMT3B' instead of 'dnmtb')."
+            logger.error(msg)
+            raise ValueError(msg)
+        chrom, start, end, strand = coords
+        
+        # Calculate TSS
+        tss = start if strand == "+" else end
+        logger.info(f"TSS for {gene_name} is at {chrom}:{tss} ({strand})")
     
     # 2. Get Promoter Sequence
     promoter_seq = genome_client.get_promoter_sequence(chrom, tss, strand, promoter_up, promoter_down, genome)

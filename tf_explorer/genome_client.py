@@ -131,3 +131,64 @@ def get_promoter_sequence(chrom: str, tss: int, strand: str, up_bp: int, down_bp
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching sequence: {e}")
         return None
+
+from typing import List, Dict
+
+def get_gene_transcripts(gene_name: str) -> List[Dict]:
+    """
+    Fetches all transcripts for a given gene symbol from Ensembl.
+    Returns a list of dictionaries containing transcript details.
+    """
+    logger.info(f"Fetching transcripts for {gene_name}...")
+    
+    # Use Ensembl lookup endpoint
+    ext = f"/lookup/symbol/homo_sapiens/{gene_name}?expand=1"
+    headers = {"Content-Type": "application/json"}
+    
+    try:
+        r = requests.get(ENSEMBL_REST_URL + ext, headers=headers)
+        
+        if not r.ok:
+            logger.error(f"Ensembl API failed: {r.text}")
+            return []
+            
+        data = r.json()
+        
+        if 'Transcript' not in data:
+            logger.warning(f"No transcripts found for {gene_name}")
+            return []
+            
+        transcripts = []
+        gene_strand = data.get('strand', 1)
+        
+        for t in data['Transcript']:
+            # Determine TSS based on strand
+            # Ensembl returns start/end. 
+            # If strand is 1 (+), TSS is start.
+            # If strand is -1 (-), TSS is end.
+            t_strand = t.get('strand', gene_strand)
+            
+            if t_strand == 1:
+                tss = t['start']
+            else:
+                tss = t['end']
+                
+            transcripts.append({
+                'id': t['id'],
+                'name': t.get('display_name', t['id']),
+                'biotype': t.get('biotype', 'unknown'),
+                'is_canonical': t.get('is_canonical', 0) == 1,
+                'tss': tss,
+                'strand': "+" if t_strand == 1 else "-",
+                'length': t['end'] - t['start'],
+                'chrom': data['seq_region_name']
+            })
+            
+        # Sort: Canonical first, then by length (descending)
+        transcripts.sort(key=lambda x: (not x['is_canonical'], -x['length']))
+        
+        return transcripts
+        
+    except Exception as e:
+        logger.error(f"Error fetching transcripts: {e}")
+        return []
