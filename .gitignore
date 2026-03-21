@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg-link
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Output / generated files
+results/
+demo_results/
+*_encode_hits.csv
+*_motif_predictions.csv
+*_experiment_stats.csv
+*_combined_summary.csv
+*_tf_binding_plot.png
+config_used.yaml
+analysis_log.txt
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
