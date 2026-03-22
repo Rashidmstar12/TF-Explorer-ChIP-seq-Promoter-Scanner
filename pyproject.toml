@@ -37,6 +37,7 @@ dependencies = [
     "pyyaml",
     "streamlit",
     "primer3-py",
+    "scipy",
 ]
 
 [project.scripts]
