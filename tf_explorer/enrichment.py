@@ -4,15 +4,19 @@ Provides:
   - GC-content sliding-window profiling
   - CpG island detection  (Gardiner-Garden & Frommer 1987 algorithm)
   - TF co-binding frequency matrix
-  - Ready-to-use matplotlib figures for both analyses
+  - Core promoter element detection (TATA, CCAAT, GC-box, Inr)
+  - Consensus / high-confidence peak identification
+  - ChIP-seq signal intensity distribution plots
+  - Ready-to-use matplotlib figures for all analyses
 """
 
 import logging
+import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -270,5 +274,363 @@ def plot_cobinding_heatmap(cobind_matrix: pd.DataFrame, gene_name: str) -> plt.F
         f"TF Co-binding at {gene_name} Promoter\n"
         "(number of biosamples where both TFs bind)"
     )
+    plt.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Core Promoter Element Detection
+# ---------------------------------------------------------------------------
+
+#: Canonical core promoter elements with IUPAC regex patterns and expected
+#: TSS-relative position ranges (upstream = negative).
+_CORE_ELEMENTS = [
+    {
+        "name": "TATA box",
+        "pattern": r"TATA[AT]A[AT]",           # TATAAA consensus (relaxed)
+        "pos_min": -40,
+        "pos_max": -20,
+        "description": "Core promoter element ~25-30 bp upstream of TSS; recruits TBP/TFIID",
+    },
+    {
+        "name": "CCAAT box",
+        "pattern": r"[CG]CAAT",                # NF-Y binding site
+        "pos_min": -100,
+        "pos_max": -60,
+        "description": "Recruits NF-Y and CBF; found at ~-80 bp in many TATA-less promoters",
+    },
+    {
+        "name": "GC box (SP1)",
+        "pattern": r"GGGCGG|CCGCCC",           # SP1/KLF consensus
+        "pos_min": -200,
+        "pos_max": 50,
+        "description": "SP1/KLF family binding site (GC-rich); common in CpG island promoters",
+    },
+    {
+        "name": "Initiator (Inr)",
+        "pattern": r"[CT][CT]A[ACGT][AT][CT][CT]",  # YYANWYY
+        "pos_min": -5,
+        "pos_max": 5,
+        "description": "Overlaps the TSS; mediates basal transcription in TATA-less promoters",
+    },
+    {
+        "name": "DPE (Downstream Promoter Element)",
+        "pattern": r"[AG]G[AT][CT][GT]",       # consensus RG[AT][CT][GT]
+        "pos_min": 28,
+        "pos_max": 34,
+        "description": "Downstream core element at +28-34; co-operates with Inr",
+    },
+]
+
+
+def find_core_promoter_elements(seq: str, promoter_up: int) -> List[Dict]:
+    """Scan the promoter sequence for classical core promoter elements.
+
+    Searches for TATA box, CCAAT box, GC box (SP1 site), Initiator element,
+    and Downstream Promoter Element (DPE) using IUPAC-based regex patterns.
+    Hits outside the canonical position window for each element are still
+    reported but flagged with ``canonical_position = False``.
+
+    Parameters
+    ----------
+    seq         : Promoter DNA sequence (case-insensitive).
+                  Position 0 in the string corresponds to ``-promoter_up`` bp
+                  relative to the TSS.
+    promoter_up : Number of bp upstream of the TSS in ``seq``.
+
+    Returns
+    -------
+    List of dicts with keys:
+      name, pattern, start, end, start_tss_rel, end_tss_rel,
+      matched_seq, strand, canonical_position, description.
+    Coordinates are 0-based, half-open [start, end).
+    """
+    seq_upper = seq.upper()
+    seq_rc = _reverse_complement(seq_upper)
+    hits: List[Dict] = []
+
+    for elem in _CORE_ELEMENTS:
+        for strand, s in (("+", seq_upper), ("-", seq_rc)):
+            for m in re.finditer(elem["pattern"], s):
+                if strand == "+":
+                    start = m.start()
+                    end = m.end()
+                else:
+                    # Map reverse-complement position back to forward strand
+                    end = len(seq) - m.start()
+                    start = len(seq) - m.end()
+
+                start_tss = start - promoter_up
+                end_tss = end - promoter_up
+                canonical = (
+                    elem["pos_min"] <= start_tss <= elem["pos_max"]
+                    or elem["pos_min"] <= end_tss - 1 <= elem["pos_max"]
+                )
+
+                hits.append(
+                    {
+                        "name": elem["name"],
+                        "pattern": elem["pattern"],
+                        "start": start,
+                        "end": end,
+                        "start_tss_rel": start_tss,
+                        "end_tss_rel": end_tss,
+                        "matched_seq": seq_upper[start:end] if strand == "+" else seq_rc[m.start():m.end()],
+                        "strand": strand,
+                        "canonical_position": canonical,
+                        "description": elem["description"],
+                    }
+                )
+
+    return hits
+
+
+def _reverse_complement(seq: str) -> str:
+    """Return the reverse complement of a DNA string (uppercase only)."""
+    table = str.maketrans("ACGT", "TGCA")
+    return seq.translate(table)[::-1]
+
+
+def plot_core_promoter_elements(
+    hits: List[Dict],
+    promoter_up: int,
+    promoter_down: int,
+    gene_name: str,
+) -> plt.Figure:
+    """Draw a linear map of detected core promoter elements relative to TSS.
+
+    Canonical-position hits are shown as filled boxes; non-canonical as
+    hatched boxes. Each element type gets a distinct colour.
+    """
+    if not hits:
+        fig, ax = plt.subplots(figsize=(12, 2))
+        ax.text(0, 0.5, "No core promoter elements detected.",
+                ha="center", va="center", fontsize=11, color="gray", style="italic")
+        ax.set_xlim(-promoter_up, promoter_down)
+        ax.axis("off")
+        ax.set_title(f"Core Promoter Elements – {gene_name}")
+        plt.tight_layout()
+        return fig
+
+    names = sorted({h["name"] for h in hits})
+    palette = sns.color_palette("tab10", len(names))
+    color_map = dict(zip(names, palette))
+
+    # Separate forward and reverse
+    fwd = [h for h in hits if h["strand"] == "+"]
+    rev = [h for h in hits if h["strand"] == "-"]
+
+    n_rows = 2  # forward + reverse
+    fig, axes = plt.subplots(n_rows, 1, figsize=(14, 3), sharex=True,
+                              gridspec_kw={"height_ratios": [1, 1]})
+    fig.suptitle(f"Core Promoter Elements – {gene_name}", fontsize=12, y=1.02)
+
+    for ax, panel_hits, strand_label, y_track in zip(axes, [fwd, rev], ["Forward (+)", "Reverse (-)"], [0.5, 0.5]):
+        ax.axvline(0, color="black", linestyle="--", linewidth=1.0, label="TSS")
+        ax.set_xlim(-promoter_up, promoter_down)
+        ax.set_ylim(0, 1)
+        ax.set_yticks([])
+        ax.set_ylabel(strand_label, fontsize=9)
+        ax.grid(True, axis="x", alpha=0.15)
+
+        for h in panel_hits:
+            s = h["start_tss_rel"]
+            e = h["end_tss_rel"]
+            w = max(e - s, 1)
+            color = color_map[h["name"]]
+            hatch = "" if h["canonical_position"] else "///"
+            rect = plt.Rectangle((s, 0.2), w, 0.6,
+                                  facecolor=color, edgecolor="black",
+                                  linewidth=0.8, hatch=hatch, alpha=0.8)
+            ax.add_patch(rect)
+            if w > 4:
+                ax.text(s + w / 2, 0.5, h["name"].split(" ")[0],
+                        ha="center", va="center", fontsize=6.5, color="white",
+                        fontweight="bold", clip_on=True)
+
+    axes[-1].set_xlabel("Distance to TSS (bp)")
+
+    # Legend
+    from matplotlib.patches import Patch
+    legend_handles = [Patch(facecolor=color_map[n], label=n, edgecolor="black") for n in names]
+    legend_handles.append(Patch(facecolor="white", hatch="///", label="Non-canonical position", edgecolor="black"))
+    fig.legend(handles=legend_handles, loc="lower center", ncol=min(len(legend_handles), 4),
+               bbox_to_anchor=(0.5, -0.25), fontsize=8, frameon=True)
+    plt.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Consensus Peak Identification
+# ---------------------------------------------------------------------------
+
+def calc_consensus_peaks(
+    df_encode: pd.DataFrame,
+    min_experiments: int = 2,
+    merge_distance: int = 50,
+) -> pd.DataFrame:
+    """Identify high-confidence (consensus) peaks found in multiple experiments.
+
+    A consensus peak must overlap or be within ``merge_distance`` bp of another
+    peak from a *different* experiment. The returned DataFrame contains each
+    unique peak region with the count of supporting experiments.
+
+    Parameters
+    ----------
+    df_encode        : encode_hits.csv DataFrame (must have ``peak_start``,
+                       ``peak_end``, ``experiment`` columns).
+    min_experiments  : Minimum number of experiments a peak must appear in
+                       (default 2).
+    merge_distance   : Max gap (bp) between peaks to merge them (default 50).
+
+    Returns
+    -------
+    DataFrame with columns: chrom, start, end, width, supporting_experiments,
+    experiment_ids, tfs, biosamples, mean_signal.
+    """
+    required = {"peak_start", "peak_end", "experiment"}
+    if df_encode.empty or not required.issubset(df_encode.columns):
+        return pd.DataFrame()
+
+    # Use overlapping peaks only when column present
+    df = df_encode.copy()
+    if "overlap" in df.columns:
+        df = df[df["overlap"] == True]
+
+    if df.empty:
+        return pd.DataFrame()
+
+    # Sort peaks
+    df = df.sort_values(["peak_start", "peak_end"]).reset_index(drop=True)
+
+    # Build a normalised working frame with stable column names
+    _tf_src  = "tf"       if "tf"       in df.columns else "experiment"
+    _bio_src = "biosample" if "biosample" in df.columns else "experiment"
+    _sig_src = "signal"   if ("signal"   in df.columns and df["signal"].max() > 0) else (
+               "score"    if "score"    in df.columns else "peak_start")
+
+    records = df[["peak_start", "peak_end", "experiment", _tf_src, _bio_src, _sig_src]].copy()
+    records.columns = ["start", "end", "exp", "tf", "biosample", "signal"]
+    records = records.sort_values("start").reset_index(drop=True)
+
+    clusters: List[Dict] = []
+    cur_start = int(records.loc[0, "start"])
+    cur_end   = int(records.loc[0, "end"])
+    cur_rows  = [0]
+
+    for i in range(1, len(records)):
+        row_start = int(records.loc[i, "start"])
+        row_end   = int(records.loc[i, "end"])
+        if row_start <= cur_end + merge_distance:
+            cur_end = max(cur_end, row_end)
+            cur_rows.append(i)
+        else:
+            clusters.append({"start": cur_start, "end": cur_end, "rows": cur_rows})
+            cur_start = row_start
+            cur_end   = row_end
+            cur_rows  = [i]
+    clusters.append({"start": cur_start, "end": cur_end, "rows": cur_rows})
+
+    # Filter clusters with enough unique experiments
+    results = []
+    for cl in clusters:
+        sub = records.iloc[cl["rows"]]
+        unique_exps = sub["exp"].nunique()
+        if unique_exps >= min_experiments:
+            mean_sig = sub["signal"].replace(0, np.nan).mean()
+            results.append(
+                {
+                    "start": cl["start"],
+                    "end": cl["end"],
+                    "width": cl["end"] - cl["start"],
+                    "supporting_experiments": unique_exps,
+                    "experiment_ids": "; ".join(sorted(sub["exp"].unique())),
+                    "tfs": "; ".join(sorted(sub["tf"].unique())),
+                    "biosamples": "; ".join(sorted(sub["biosample"].unique())),
+                    "mean_signal": round(float(mean_sig), 2) if not np.isnan(mean_sig) else 0.0,
+                }
+            )
+
+    if not results:
+        return pd.DataFrame()
+
+    return pd.DataFrame(results).sort_values("supporting_experiments", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Signal Intensity Distribution
+# ---------------------------------------------------------------------------
+
+def plot_signal_distribution(
+    df_encode: pd.DataFrame,
+    gene_name: str,
+    signal_col: str = "signal",
+    group_col: str = "biosample",
+) -> Optional[plt.Figure]:
+    """Violin + strip plot of ChIP-seq signal intensity per group.
+
+    Returns None when there is insufficient data.
+
+    Parameters
+    ----------
+    df_encode  : encode_hits.csv DataFrame.
+    gene_name  : Gene name for the plot title.
+    signal_col : Column containing signal values (default ``"signal"``).
+    group_col  : Grouping column (default ``"biosample"``).
+    """
+    if df_encode.empty:
+        return None
+
+    # Choose best available signal column
+    for col in [signal_col, "score"]:
+        if col in df_encode.columns and df_encode[col].max() > 0:
+            signal_col = col
+            break
+    else:
+        return None
+
+    # Use only overlapping peaks when column present
+    df = df_encode.copy()
+    if "overlap" in df.columns:
+        df = df[df["overlap"] == True]
+
+    if df.empty or signal_col not in df.columns:
+        return None
+
+    # Drop zero / null signals
+    df = df[df[signal_col] > 0].dropna(subset=[signal_col])
+    if df.empty:
+        return None
+
+    group_col_used = group_col if group_col in df.columns else (
+        "tf" if "tf" in df.columns else None
+    )
+
+    fig, ax = plt.subplots(figsize=(max(8, len(df[group_col_used].unique()) * 1.2 if group_col_used else 6), 5))
+
+    if group_col_used and df[group_col_used].nunique() >= 2:
+        order = (
+            df.groupby(group_col_used)[signal_col]
+            .median()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+        sns.violinplot(data=df, x=group_col_used, y=signal_col, order=order,
+                       hue=group_col_used, legend=False,
+                       ax=ax, palette="Set2", inner="box", cut=0)
+        sns.stripplot(data=df, x=group_col_used, y=signal_col, order=order,
+                      hue=group_col_used, legend=False,
+                      ax=ax, palette="dark:black", alpha=0.3, size=3, jitter=True)
+        ax.set_xlabel(group_col_used.capitalize())
+        plt.xticks(rotation=45, ha="right")
+    else:
+        # Single group or no grouping: use histogram
+        ax.hist(df[signal_col].dropna(), bins=30, color="steelblue", edgecolor="white", alpha=0.85)
+        ax.set_xlabel(signal_col.capitalize())
+        ax.set_ylabel("Count")
+
+    ax.set_ylabel(f"ChIP-seq {signal_col.capitalize()}")
+    ax.set_title(f"ChIP-seq Signal Distribution – {gene_name}")
+    ax.grid(True, axis="y", alpha=0.2)
     plt.tight_layout()
     return fig

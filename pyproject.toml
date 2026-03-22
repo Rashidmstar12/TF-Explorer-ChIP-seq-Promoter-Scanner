@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tf-explorer"
-version = "1.3.0"
+version = "1.5.0"
 description = "Analyze transcription factor ChIP-seq binding at any human gene promoter using ENCODE and JASPAR."
 authors = [
   { name="Rashidmstar12", email="rashidmstar@pondiuni.ac.in" },

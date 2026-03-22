@@ -44,6 +44,9 @@ Whether you are investigating a novel gene like *PWWP2A* or a well-known oncogen
 | 🏔️ **Strict & Loose Windows** | Analyze binding in a tight promoter region and a wider ±5 kb window |
 | 🔍 **Motif Scanning** | Predict binding sites using JASPAR PWMs (Biopython PSSM engine) |
 | 🧩 **CpG Island Detection** | Identify CpG islands in the promoter with GC-content sliding-window profile |
+| 🏛️ **Core Promoter Elements** | Detect TATA box, CCAAT box, GC box (SP1), Initiator (Inr), and DPE at canonical positions |
+| 🔁 **Consensus Peak Finder** | Surface peaks replicated across ≥ N independent experiments for high confidence |
+| 📦 **Signal Distribution** | Violin plots of ChIP-seq signal intensity per biosample/TF to compare binding strength |
 | 🤝 **TF Co-binding Heatmap** | Count biosamples where each TF pair co-binds to reveal regulatory cooperation |
 | 🔗 **UCSC Browser Link** | One-click link to view the promoter region in the UCSC Genome Browser |
 | 📈 **Visualizations** | Binding density plots, peak overlay tracks, and signal-wave plots |
@@ -124,6 +127,8 @@ run_demo.bat
 | `[GENE]_experiment_stats.csv` | Per-file statistics (strict & loose peaks) |
 | `[GENE]_combined_summary.csv` | High-level summary of all findings |
 | `[GENE]_cpg_islands.csv` | CpG islands detected in the promoter sequence |
+| `[GENE]_core_elements.csv` | Core promoter elements (TATA, CCAAT, GC-box, Inr, DPE) |
+| `[GENE]_consensus_peaks.csv` | High-confidence peaks replicated across ≥ 2 experiments |
 | `[GENE]_promoter_seq.txt` | Promoter DNA sequence used in the analysis |
 | `[GENE]_tf_binding_plot.png` | Promoter track visualization |
 | `config_used.yaml` | Exact parameters used for reproducibility |

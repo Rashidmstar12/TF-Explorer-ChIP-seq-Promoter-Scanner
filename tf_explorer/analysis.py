@@ -256,6 +256,21 @@ def analyze_gene(
     df_cpg.to_csv(os.path.join(output_dir, f"{gene_name}_cpg_islands.csv"), index=False)
     logger.info(f"CpG island detection: {len(cpg_islands)} island(s) found.")
 
+    # 4c. Core Promoter Element Detection
+    core_elements = _enrich.find_core_promoter_elements(promoter_seq, promoter_up)
+    df_core = pd.DataFrame(core_elements)
+    df_core.to_csv(os.path.join(output_dir, f"{gene_name}_core_elements.csv"), index=False)
+    n_canonical_core = sum(1 for e in core_elements if e.get("canonical_position"))
+    logger.info(
+        f"Core promoter element scan: {len(core_elements)} hit(s), "
+        f"{n_canonical_core} in canonical position."
+    )
+
+    # 4d. Consensus Peak Identification
+    consensus_peaks = _enrich.calc_consensus_peaks(df_encode)
+    consensus_peaks.to_csv(os.path.join(output_dir, f"{gene_name}_consensus_peaks.csv"), index=False)
+    logger.info(f"Consensus peaks (≥2 experiments): {len(consensus_peaks)} region(s).")
+
     # 5. Combined Summary
     biosamples = df_encode['biosample'].unique().tolist() if not df_encode.empty and 'biosample' in df_encode.columns else []
     biosamples_str = ", ".join([str(b) for b in biosamples if str(b) != "Unknown"])
@@ -268,6 +283,8 @@ def analyze_gene(
         "biosamples_with_peaks": biosamples_str,
         "motif_predictions": len(df_motifs),
         "cpg_islands_found": len(cpg_islands),
+        "core_elements_canonical": n_canonical_core,
+        "consensus_peaks": len(consensus_peaks),
         "coords": f"{chrom}:{start}-{end} ({strand})",
         "promoter_window": f"chr{chrom}:{promoter_genomic_start}-{promoter_genomic_end}",
         "loose_window": f"chr{chrom}:{loose_genomic_start}-{loose_genomic_end}",
