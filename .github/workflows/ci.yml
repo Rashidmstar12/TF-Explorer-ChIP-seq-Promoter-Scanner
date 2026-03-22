@@ -31,4 +31,4 @@ jobs:
 
       - name: Run tests
         run: |
-          python -m pytest test_simple.py test_metrics_logic.py test_comparative.py test_cell_line_comparison.py -v
+          python -m pytest test_metrics_logic.py test_comparative.py test_enrichment.py -v

@@ -425,6 +425,13 @@ def main():
                 st.markdown(f"**Promoter Window (Strict):** `{row1.get('promoter_window', 'N/A')}`")
                 st.markdown(f"**Loose Window (±5kb):** `{row1.get('loose_window', 'N/A')}`")
 
+                # UCSC Genome Browser quick-link
+                _pwin = row1.get('promoter_window', '')
+                if _pwin and _pwin != 'N/A':
+                    _ucsc_pos = _pwin.replace(" ", "")
+                    _ucsc_url = f"https://genome.ucsc.edu/cgi-bin/hgTracks?db=hg38&position={_ucsc_pos}"
+                    st.markdown(f"🔗 [Open in UCSC Genome Browser]({_ucsc_url})")
+
                 # Generate Report Text
                 biosamples_str = row1['biosamples_with_peaks']
                 coords_str = row1['coords']
@@ -506,9 +513,18 @@ Recommendation:
 
                 # Plots
                 st.subheader("Visualizations")
-                
+
                 # Use radio button for navigation to persist state and improve performance
-                view_options = ["Promoter Track", "Cell Line Comparison", "TF Comparison", "Biosample Distribution", "TF Binding Counts", "ChIP Primer Design"]
+                view_options = [
+                    "Promoter Track",
+                    "CpG Islands & GC Profile",
+                    "Co-binding Heatmap",
+                    "Cell Line Comparison",
+                    "TF Comparison",
+                    "Biosample Distribution",
+                    "TF Binding Counts",
+                    "ChIP Primer Design",
+                ]
                 view_mode = st.radio("View Results", view_options, horizontal=True, label_visibility="collapsed")
                 
                 st.divider()
@@ -590,6 +606,75 @@ Recommendation:
                                 
                     else:
                         st.warning("No data to plot.")
+
+                if view_mode == "CpG Islands & GC Profile":
+                    st.markdown("### CpG Islands & GC Content Profile")
+                    st.markdown(
+                        "CpG islands are GC-rich stretches with elevated CpG dinucleotide frequency "
+                        "often found at active gene promoters. Their presence influences TF binding "
+                        "and epigenetic regulation."
+                    )
+
+                    seq_path_cpg = os.path.join(out_dir, f"{gene_name}_promoter_seq.txt")
+                    cpg_path = os.path.join(out_dir, f"{gene_name}_cpg_islands.csv")
+
+                    if os.path.exists(seq_path_cpg):
+                        with open(seq_path_cpg) as _fh:
+                            _promoter_seq = _fh.read().strip()
+
+                        from tf_explorer import enrichment as _enrich
+                        _gc_window = st.slider("GC-profile window (bp)", 50, 300, 100, step=25)
+                        fig_cpg = _enrich.plot_gc_cpg_profile(
+                            _promoter_seq, promoter_up, promoter_down, gene_name, window=_gc_window
+                        )
+                        st.pyplot(fig_cpg)
+
+                        if os.path.exists(cpg_path):
+                            _df_cpg = pd.read_csv(cpg_path)
+                            if not _df_cpg.empty:
+                                st.success(f"**{len(_df_cpg)} CpG Island(s)** detected in the promoter.")
+                                st.dataframe(_df_cpg)
+                                with open(cpg_path, "rb") as _f:
+                                    st.download_button(
+                                        "Download CpG Islands CSV", _f,
+                                        file_name=f"{gene_name}_cpg_islands.csv", mime="text/csv"
+                                    )
+                            else:
+                                st.info("No CpG islands detected in this promoter region.")
+                    else:
+                        st.warning("Promoter sequence file not found. Please re-run the analysis.")
+
+                if view_mode == "Co-binding Heatmap":
+                    st.markdown("### TF Co-binding Heatmap")
+                    st.markdown(
+                        "Shows how frequently each pair of TFs **co-bind** the same promoter region "
+                        "across different biosamples. High co-binding suggests these TFs may cooperate "
+                        "in regulating this gene."
+                    )
+
+                    hits_path_cb = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
+                    if os.path.exists(hits_path_cb):
+                        _hits_df_cb = pd.read_csv(hits_path_cb)
+                        if not _hits_df_cb.empty:
+                            from tf_explorer import enrichment as _enrich
+                            _cobind = _enrich.calc_tf_cobinding(_hits_df_cb)
+                            if _cobind.empty or len(_cobind) < 2:
+                                st.info(
+                                    "Co-binding analysis requires at least **two TFs** with overlapping "
+                                    "peaks. Run the analysis with multiple TFs selected."
+                                )
+                            else:
+                                fig_cb = _enrich.plot_cobinding_heatmap(_cobind, gene_name)
+                                st.pyplot(fig_cb)
+                                st.caption(
+                                    "Cell value = number of biosamples where **both** TFs have "
+                                    "at least one peak overlapping this promoter."
+                                )
+                                st.dataframe(_cobind)
+                        else:
+                            st.info("No binding data available for co-binding analysis.")
+                    else:
+                        st.warning("No analysis results found.")
 
                 if view_mode == "Cell Line Comparison":
                     st.markdown("### Cell Line Comparison")

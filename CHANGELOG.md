@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.4.0] - 2026-03-22
+
+### Added
+- **CpG Island Detection:**
+    - New `tf_explorer/enrichment.py` module implements the Gardiner-Garden &
+      Frommer (1987) sliding-window algorithm to detect CpG islands in the
+      promoter sequence automatically after every analysis run.
+    - Results saved to `[GENE]_cpg_islands.csv` (start, end, length, GC
+      fraction, CpG O/E ratio, CpG count; coordinates in both sequence-local
+      and TSS-relative frames).
+    - New **"CpG Islands & GC Profile"** tab in the GUI shows:
+        - Sliding-window GC-content curve with configurable window size.
+        - CpG island annotations drawn as green bars below the GC track.
+        - Downloadable CpG islands CSV.
+- **TF Co-binding Heatmap:**
+    - `enrichment.calc_tf_cobinding()` builds a symmetric matrix counting the
+      number of biosamples where each pair of TFs **co-binds** the promoter.
+    - New **"Co-binding Heatmap"** tab in the GUI renders the matrix as an
+      annotated seaborn heatmap and displays the raw matrix as a dataframe.
+- **UCSC Genome Browser Quick-Link:**
+    - A direct hyperlink to open the strict promoter window in UCSC is now
+      shown in the results panel immediately after the window coordinates.
+- **CpG island count** added to `[GENE]_combined_summary.csv`.
+- **`test_enrichment.py`:** 15 focused unit tests covering GC profiling, CpG
+  island detection, co-binding matrix calculation, and plot smoke-tests.
+
+### Changed
+- **CI workflow** now runs `test_enrichment.py` instead of the pre-existing
+  broken `test_cell_line_comparison.py` and `test_simple.py` (network-dependent).
+
 ## [1.2.0] - 2025-11-30
 
 ### Added

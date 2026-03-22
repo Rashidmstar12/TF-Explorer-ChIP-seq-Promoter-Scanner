@@ -5,7 +5,7 @@
     <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
   </a>
   <a href="https://www.python.org/downloads/">
-    <img src="https://img.shields.io/badge/python-3.7%2B-blue.svg" alt="Python 3.7+">
+    <img src="https://img.shields.io/badge/python-3.9%2B-blue.svg" alt="Python 3.9+">
   </a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey" alt="Platform">
   <a href="https://github.com/Rashidmstar12/TF-Explorer-ChIP-seq-Promoter-Scanner/actions">
@@ -43,6 +43,9 @@ Whether you are investigating a novel gene like *PWWP2A* or a well-known oncogen
 | 🔁 **Multi-TF Comparison** | Compare binding patterns of different TFs on the same promoter |
 | 🏔️ **Strict & Loose Windows** | Analyze binding in a tight promoter region and a wider ±5 kb window |
 | 🔍 **Motif Scanning** | Predict binding sites using JASPAR PWMs (Biopython PSSM engine) |
+| 🧩 **CpG Island Detection** | Identify CpG islands in the promoter with GC-content sliding-window profile |
+| 🤝 **TF Co-binding Heatmap** | Count biosamples where each TF pair co-binds to reveal regulatory cooperation |
+| 🔗 **UCSC Browser Link** | One-click link to view the promoter region in the UCSC Genome Browser |
 | 📈 **Visualizations** | Binding density plots, peak overlay tracks, and signal-wave plots |
 | 💾 **Reproducible Output** | CSV tables, BED files, YAML config, and PNG figures saved per run |
 
@@ -120,6 +123,8 @@ run_demo.bat
 | `[GENE]_motif_predictions.csv` | Predicted binding sites from JASPAR PWMs |
 | `[GENE]_experiment_stats.csv` | Per-file statistics (strict & loose peaks) |
 | `[GENE]_combined_summary.csv` | High-level summary of all findings |
+| `[GENE]_cpg_islands.csv` | CpG islands detected in the promoter sequence |
+| `[GENE]_promoter_seq.txt` | Promoter DNA sequence used in the analysis |
 | `[GENE]_tf_binding_plot.png` | Promoter track visualization |
 | `config_used.yaml` | Exact parameters used for reproducibility |
 

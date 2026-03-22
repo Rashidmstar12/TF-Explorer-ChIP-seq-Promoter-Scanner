@@ -106,7 +106,12 @@ def analyze_gene(
     if not promoter_seq:
         logger.error("Could not fetch promoter sequence. Aborting.")
         return
-        
+
+    # Save promoter sequence for downstream enrichment analyses
+    seq_path = os.path.join(output_dir, f"{gene_name}_promoter_seq.txt")
+    with open(seq_path, "w") as _fh:
+        _fh.write(promoter_seq)
+
     # 3. ENCODE Search & Overlap
     encode_hits = []
     
@@ -240,12 +245,21 @@ def analyze_gene(
     else:
         df_motifs = pd.DataFrame(motif_hits)
     df_motifs.to_csv(os.path.join(output_dir, f"{gene_name}_motif_predictions.csv"), index=False)
-    
+
+    # 4b. CpG Island Detection
+    from . import enrichment as _enrich
+    cpg_islands = _enrich.find_cpg_islands(promoter_seq)
+    df_cpg = pd.DataFrame(cpg_islands)
+    if not df_cpg.empty:
+        df_cpg["start_tss_rel"] = df_cpg["start"] - promoter_up
+        df_cpg["end_tss_rel"] = df_cpg["end"] - promoter_up
+    df_cpg.to_csv(os.path.join(output_dir, f"{gene_name}_cpg_islands.csv"), index=False)
+    logger.info(f"CpG island detection: {len(cpg_islands)} island(s) found.")
+
     # 5. Combined Summary
-    # Just a simple count summary for now
     biosamples = df_encode['biosample'].unique().tolist() if not df_encode.empty and 'biosample' in df_encode.columns else []
     biosamples_str = ", ".join([str(b) for b in biosamples if str(b) != "Unknown"])
-    
+
     summary = {
         "gene": gene_name,
         "promoter_length": len(promoter_seq),
@@ -253,6 +267,7 @@ def analyze_gene(
         "experiments_with_peaks": df_encode['experiment'].nunique() if not df_encode.empty else 0,
         "biosamples_with_peaks": biosamples_str,
         "motif_predictions": len(df_motifs),
+        "cpg_islands_found": len(cpg_islands),
         "coords": f"{chrom}:{start}-{end} ({strand})",
         "promoter_window": f"chr{chrom}:{promoter_genomic_start}-{promoter_genomic_end}",
         "loose_window": f"chr{chrom}:{loose_genomic_start}-{loose_genomic_end}",
