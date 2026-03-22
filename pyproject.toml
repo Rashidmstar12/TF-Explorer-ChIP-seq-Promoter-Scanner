@@ -4,15 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tf-explorer"
-version = "0.1.0"
-description = "A tool to explore TF binding sites for any gene using ENCODE and JASPAR."
+version = "1.5.0"
+description = "Analyze transcription factor ChIP-seq binding at any human gene promoter using ENCODE and JASPAR."
 authors = [
-  { name="Antigravity", email="antigravity@example.com" },
+  { name="Rashidmstar12", email="rashidmstar@pondiuni.ac.in" },
 ]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = [
+    "bioinformatics", "genomics", "transcription-factor", "ChIP-seq",
+    "ENCODE", "JASPAR", "promoter", "motif", "epigenomics", "streamlit"
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
@@ -24,11 +35,15 @@ dependencies = [
     "seaborn",
     "mygene",
     "pyyaml",
-    "streamlit"
+    "streamlit",
+    "primer3-py",
+    "scipy",
 ]
 
 [project.scripts]
 tf-explorer = "tf_explorer.cli:main"
 
 [project.urls]
-"Homepage" = "https://github.com/example/tf-explorer"
+"Homepage" = "https://github.com/Rashidmstar12/TF-Explorer-ChIP-seq-Promoter-Scanner"
+"Source" = "https://github.com/Rashidmstar12/TF-Explorer-ChIP-seq-Promoter-Scanner"
+"Bug Tracker" = "https://github.com/Rashidmstar12/TF-Explorer-ChIP-seq-Promoter-Scanner/issues"

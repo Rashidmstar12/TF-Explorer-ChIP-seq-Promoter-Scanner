@@ -425,6 +425,13 @@ def main():
                 st.markdown(f"**Promoter Window (Strict):** `{row1.get('promoter_window', 'N/A')}`")
                 st.markdown(f"**Loose Window (±5kb):** `{row1.get('loose_window', 'N/A')}`")
 
+                # UCSC Genome Browser quick-link
+                _pwin = row1.get('promoter_window', '')
+                if _pwin and _pwin != 'N/A':
+                    _ucsc_pos = _pwin.replace(" ", "")
+                    _ucsc_url = f"https://genome.ucsc.edu/cgi-bin/hgTracks?db=hg38&position={_ucsc_pos}"
+                    st.markdown(f"🔗 [Open in UCSC Genome Browser]({_ucsc_url})")
+
                 # Generate Report Text
                 biosamples_str = row1['biosamples_with_peaks']
                 coords_str = row1['coords']
@@ -506,9 +513,21 @@ Recommendation:
 
                 # Plots
                 st.subheader("Visualizations")
-                
+
                 # Use radio button for navigation to persist state and improve performance
-                view_options = ["Promoter Track", "Cell Line Comparison", "TF Comparison", "Biosample Distribution", "TF Binding Counts", "ChIP Primer Design"]
+                view_options = [
+                    "Promoter Track",
+                    "CpG Islands & GC Profile",
+                    "Core Promoter Elements",
+                    "Co-binding Heatmap",
+                    "Signal Distribution",
+                    "Consensus Peaks",
+                    "Cell Line Comparison",
+                    "TF Comparison",
+                    "Biosample Distribution",
+                    "TF Binding Counts",
+                    "ChIP Primer Design",
+                ]
                 view_mode = st.radio("View Results", view_options, horizontal=True, label_visibility="collapsed")
                 
                 st.divider()
@@ -590,6 +609,223 @@ Recommendation:
                                 
                     else:
                         st.warning("No data to plot.")
+
+                if view_mode == "CpG Islands & GC Profile":
+                    st.markdown("### CpG Islands & GC Content Profile")
+                    st.markdown(
+                        "CpG islands are GC-rich stretches with elevated CpG dinucleotide frequency "
+                        "often found at active gene promoters. Their presence influences TF binding "
+                        "and epigenetic regulation."
+                    )
+
+                    seq_path_cpg = os.path.join(out_dir, f"{gene_name}_promoter_seq.txt")
+                    cpg_path = os.path.join(out_dir, f"{gene_name}_cpg_islands.csv")
+
+                    if os.path.exists(seq_path_cpg):
+                        with open(seq_path_cpg) as _fh:
+                            _promoter_seq = _fh.read().strip()
+
+                        from tf_explorer import enrichment as _enrich
+                        _gc_window = st.slider("GC-profile window (bp)", 50, 300, 100, step=25)
+                        fig_cpg = _enrich.plot_gc_cpg_profile(
+                            _promoter_seq, promoter_up, promoter_down, gene_name, window=_gc_window
+                        )
+                        st.pyplot(fig_cpg)
+
+                        if os.path.exists(cpg_path):
+                            _df_cpg = pd.read_csv(cpg_path)
+                            if not _df_cpg.empty:
+                                st.success(f"**{len(_df_cpg)} CpG Island(s)** detected in the promoter.")
+                                st.dataframe(_df_cpg)
+                                with open(cpg_path, "rb") as _f:
+                                    st.download_button(
+                                        "Download CpG Islands CSV", _f,
+                                        file_name=f"{gene_name}_cpg_islands.csv", mime="text/csv"
+                                    )
+                            else:
+                                st.info("No CpG islands detected in this promoter region.")
+                    else:
+                        st.warning("Promoter sequence file not found. Please re-run the analysis.")
+
+                if view_mode == "Co-binding Heatmap":
+                    st.markdown("### TF Co-binding Heatmap")
+                    st.markdown(
+                        "Shows how frequently each pair of TFs **co-bind** the same promoter region "
+                        "across different biosamples. High co-binding suggests these TFs may cooperate "
+                        "in regulating this gene."
+                    )
+
+                    hits_path_cb = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
+                    if os.path.exists(hits_path_cb):
+                        _hits_df_cb = pd.read_csv(hits_path_cb)
+                        if not _hits_df_cb.empty:
+                            from tf_explorer import enrichment as _enrich
+                            _cobind = _enrich.calc_tf_cobinding(_hits_df_cb)
+                            if _cobind.empty or len(_cobind) < 2:
+                                st.info(
+                                    "Co-binding analysis requires at least **two TFs** with overlapping "
+                                    "peaks. Run the analysis with multiple TFs selected."
+                                )
+                            else:
+                                fig_cb = _enrich.plot_cobinding_heatmap(_cobind, gene_name)
+                                st.pyplot(fig_cb)
+                                st.caption(
+                                    "Cell value = number of biosamples where **both** TFs have "
+                                    "at least one peak overlapping this promoter."
+                                )
+                                st.dataframe(_cobind)
+                        else:
+                            st.info("No binding data available for co-binding analysis.")
+                    else:
+                        st.warning("No analysis results found.")
+
+                if view_mode == "Core Promoter Elements":
+                    st.markdown("### Core Promoter Elements")
+                    st.markdown(
+                        "Detects classical core promoter elements in the fetched promoter sequence. "
+                        "Understanding these elements explains the baseline transcriptional machinery "
+                        "and how TFs interface with it."
+                    )
+
+                    seq_path_ce = os.path.join(out_dir, f"{gene_name}_promoter_seq.txt")
+                    core_path   = os.path.join(out_dir, f"{gene_name}_core_elements.csv")
+
+                    if os.path.exists(seq_path_ce):
+                        with open(seq_path_ce) as _fh:
+                            _seq_ce = _fh.read().strip()
+                        from tf_explorer import enrichment as _enrich
+                        _core_hits = _enrich.find_core_promoter_elements(_seq_ce, promoter_up)
+                        fig_ce = _enrich.plot_core_promoter_elements(
+                            _core_hits, promoter_up, promoter_down, gene_name
+                        )
+                        st.pyplot(fig_ce)
+
+                        if _core_hits:
+                            _df_ce = pd.DataFrame(_core_hits)
+                            canonical_count = _df_ce["canonical_position"].sum()
+                            st.success(
+                                f"Found **{len(_df_ce)}** core element hit(s); "
+                                f"**{canonical_count}** in canonical position(s)."
+                            )
+                            with st.expander("Core Element Details", expanded=True):
+                                _show_cols = ["name", "start_tss_rel", "end_tss_rel",
+                                              "matched_seq", "strand", "canonical_position", "description"]
+                                st.dataframe(_df_ce[[c for c in _show_cols if c in _df_ce.columns]])
+                            if os.path.exists(core_path):
+                                with open(core_path, "rb") as _f:
+                                    st.download_button(
+                                        "Download Core Elements CSV", _f,
+                                        file_name=f"{gene_name}_core_elements.csv", mime="text/csv"
+                                    )
+                        else:
+                            st.info("No core promoter elements detected in this region.")
+
+                        with st.expander("ℹ️ Element Descriptions"):
+                            from tf_explorer.enrichment import _CORE_ELEMENTS as _CE_DEFS
+                            for ce in _CE_DEFS:
+                                st.markdown(f"**{ce['name']}** (`{ce['pattern']}`): {ce['description']}")
+                    else:
+                        st.warning("Promoter sequence file not found. Please re-run the analysis.")
+
+                if view_mode == "Signal Distribution":
+                    st.markdown("### ChIP-seq Signal Intensity Distribution")
+                    st.markdown(
+                        "Violin plots show the distribution of ChIP-seq signal values for each "
+                        "biosample. Wider violins indicate more peaks at that signal level. "
+                        "Overlaid dots are individual peaks. Biosamples are sorted by median signal."
+                    )
+
+                    hits_path_sd = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
+                    if os.path.exists(hits_path_sd):
+                        _hits_sd = pd.read_csv(hits_path_sd)
+                        from tf_explorer import enrichment as _enrich
+                        _group_by_sd = st.radio(
+                            "Group by:", ["biosample", "tf"], horizontal=True,
+                            key="sig_dist_group"
+                        )
+                        fig_sd = _enrich.plot_signal_distribution(
+                            _hits_sd, gene_name, group_col=_group_by_sd
+                        )
+                        if fig_sd is not None:
+                            st.pyplot(fig_sd)
+                        else:
+                            st.info(
+                                "No usable signal/score data available. "
+                                "This view requires experiments with signal value columns."
+                            )
+                    else:
+                        st.warning("No analysis results found.")
+
+                if view_mode == "Consensus Peaks":
+                    st.markdown("### High-Confidence Consensus Peaks")
+                    st.markdown(
+                        "Peaks that appear in **multiple independent experiments** are more likely "
+                        "to represent genuine TF binding sites. Select the minimum number of "
+                        "supporting experiments to filter results."
+                    )
+
+                    hits_path_cp = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
+                    if os.path.exists(hits_path_cp):
+                        _hits_cp = pd.read_csv(hits_path_cp)
+                        _min_exp = st.slider(
+                            "Minimum supporting experiments", min_value=2,
+                            max_value=max(2, int(_hits_cp["experiment"].nunique()) if not _hits_cp.empty else 2),
+                            value=2, step=1
+                        )
+                        _merge_dist = st.number_input(
+                            "Peak merge distance (bp)", min_value=0, max_value=500, value=50, step=10
+                        )
+                        from tf_explorer import enrichment as _enrich
+                        _cons_df = _enrich.calc_consensus_peaks(
+                            _hits_cp, min_experiments=_min_exp, merge_distance=int(_merge_dist)
+                        )
+                        if not _cons_df.empty:
+                            st.success(
+                                f"**{len(_cons_df)}** consensus peak region(s) supported by "
+                                f"≥ {_min_exp} experiment(s)."
+                            )
+                            st.dataframe(_cons_df)
+
+                            # Mini track showing consensus peaks
+                            import matplotlib.pyplot as _plt
+                            fig_cp, ax_cp = _plt.subplots(figsize=(12, 2))
+                            ax_cp.axvline(0, color="black", linestyle="--", label="TSS")
+                            for _, _r in _cons_df.iterrows():
+                                _cs = int(_r["start"])
+                                _ce = int(_r["end"])
+                                _center = (_cs + _ce) / 2
+                                # Convert to TSS-relative
+                                from tf_explorer.analysis import find_overlaps_for_experiment  # noqa
+                                # Use distance_to_tss from original hits if available
+                                _matching = _hits_cp[
+                                    (_hits_cp["peak_start"] >= _cs - 50) &
+                                    (_hits_cp["peak_end"] <= _ce + 50)
+                                ]
+                                _dist = _matching["distance_to_tss"].mean() if not _matching.empty else 0
+                                _color = "darkred" if _r["supporting_experiments"] >= 3 else "coral"
+                                ax_cp.barh(0.5, _ce - _cs, left=_dist - (_ce - _cs) / 2,
+                                           height=0.5, color=_color, alpha=0.8, edgecolor="white")
+                            ax_cp.set_xlim(-promoter_up, promoter_down)
+                            ax_cp.set_ylim(0, 1)
+                            ax_cp.set_yticks([])
+                            ax_cp.set_xlabel("Distance to TSS (bp)")
+                            ax_cp.set_title(f"Consensus Peak Locations – {gene_name}")
+                            ax_cp.grid(True, axis="x", alpha=0.2)
+                            _plt.tight_layout()
+                            st.pyplot(fig_cp)
+
+                            _cons_csv = _cons_df.to_csv(index=False).encode("utf-8-sig")
+                            st.download_button(
+                                "Download Consensus Peaks CSV", _cons_csv,
+                                file_name=f"{gene_name}_consensus_peaks.csv", mime="text/csv"
+                            )
+                        else:
+                            st.info(
+                                f"No peaks found in ≥ {_min_exp} experiments with the current "
+                                "merge distance. Try lowering the minimum or increasing the merge distance."
+                            )
+                    else:
+                        st.warning("No analysis results found.")
 
                 if view_mode == "Cell Line Comparison":
                     st.markdown("### Cell Line Comparison")
