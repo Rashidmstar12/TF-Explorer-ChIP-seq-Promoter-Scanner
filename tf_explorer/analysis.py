@@ -31,6 +31,99 @@ def save_config(output_dir: str, config: Dict):
     with open(os.path.join(output_dir, "config_used.yaml"), "w") as f:
         yaml.dump(config, f)
 
+def get_ucsc_conservation(chrom: str, start: int, end: int, genome: str = "hg38") -> dict:
+    """
+    Invokes the UCSC conservation skill script to fetch phyloP and phastCons scores.
+    """
+    import subprocess
+    import tempfile
+    import json
+    
+    # Dynamically locate the skill directory using os.path.expanduser("~")
+    home = os.path.expanduser("~")
+    script_path = os.path.join(
+        home, 
+        ".gemini", "config", "plugins", "science", "skills", 
+        "ucsc_conservation_and_tfbs", "scripts", "get_conservation.py"
+    )
+    
+    if not os.path.exists(script_path):
+        logger.warning(f"UCSC conservation script not found at {script_path}. Skipping conservation.")
+        return {}
+        
+    temp_dir = tempfile.gettempdir()
+    out_file = os.path.join(temp_dir, f"cons_{chrom}_{start}_{end}.json")
+    
+    coord_str = f"{chrom}:{start}-{end}"
+    cmd = [
+        "uv", "run", script_path,
+        "--coordinates", coord_str,
+        "--output", out_file,
+        "--genome", genome
+    ]
+    
+    try:
+        logger.info(f"Running UCSC conservation fetch command: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if os.path.exists(out_file):
+            with open(out_file, "r") as f:
+                data = json.load(f)
+            try:
+                os.remove(out_file)
+            except OSError:
+                pass
+            return data
+    except Exception as e:
+        logger.error(f"Failed to fetch UCSC conservation data: {e}")
+        
+    return {}
+
+def scan_motif_synergy(df_motifs, max_distance=100) -> pd.DataFrame:
+    """
+    Scans predicted motifs to find clusters of different TFs within max_distance bp of each other.
+    """
+    if df_motifs.empty or len(df_motifs) < 2:
+        return pd.DataFrame(columns=["start", "end", "tfs", "motifs_count", "description"])
+        
+    # Sort motifs by start coordinate
+    df_sorted = df_motifs.sort_values("start").copy()
+    
+    synergy_regions = []
+    n = len(df_sorted)
+    
+    # We want to find contiguous groups where the distance between adjacent motifs is <= max_distance
+    # and there are at least 2 different TFs involved.
+    i = 0
+    while i < n:
+        cluster = [df_sorted.iloc[i]]
+        j = i + 1
+        while j < n:
+            curr_start = df_sorted.iloc[j]["start"]
+            if curr_start - cluster[0]["start"] <= max_distance:
+                cluster.append(df_sorted.iloc[j])
+                j += 1
+            else:
+                break
+                
+        # Check if the cluster has at least 2 different TFs
+        unique_tfs = set(m["tf_name"] for m in cluster)
+        if len(unique_tfs) >= 2:
+            cluster_start = min(m["start"] for m in cluster)
+            cluster_end = max(m["end"] for m in cluster)
+            tfs_str = ", ".join(sorted(unique_tfs))
+            synergy_regions.append({
+                "start": int(cluster_start),
+                "end": int(cluster_end),
+                "tfs": tfs_str,
+                "motifs_count": len(cluster),
+                "description": f"Synergy hotspot: {tfs_str} co-occurring within {max_distance}bp"
+            })
+            i = j
+        else:
+            i += 1
+            
+    return pd.DataFrame(synergy_regions)
+
 def analyze_gene(
     gene_name: str,
     tf_list: List[str],
@@ -92,9 +185,9 @@ def analyze_gene(
     else:
         coords = genome_client.get_gene_coordinates(gene_name, genome)
         if not coords:
-            msg = f"Could not find gene coordinates for '{gene_name}'. Please check the gene symbol (e.g., 'DNMT3B' instead of 'dnmtb')."
-            logger.error(msg)
-            raise ValueError(msg)
+             msg = f"Could not find gene coordinates for '{gene_name}'. Please check the gene symbol (e.g., 'DNMT3B' instead of 'dnmtb')."
+             logger.error(msg)
+             raise ValueError(msg)
         chrom, start, end, strand = coords
         
         # Calculate TSS
@@ -241,6 +334,74 @@ def analyze_gene(
         df_motifs = pd.DataFrame(motif_hits)
     df_motifs.to_csv(os.path.join(output_dir, f"{gene_name}_motif_predictions.csv"), index=False)
     
+    # Fetch UCSC Conservation
+    conservation_data = {}
+    try:
+        conservation_res = get_ucsc_conservation(f"chr{chrom}", promoter_genomic_start, promoter_genomic_end, genome)
+        if conservation_res:
+            key = list(conservation_res.keys())[0]
+            conservation_data = conservation_res[key].get("tracks", {})
+    except Exception as e:
+        logger.warning(f"Error fetching conservation data: {e}")
+        
+    # Process base-by-base conservation data
+    base_data = {}
+    for pos in range(promoter_genomic_start, promoter_genomic_end + 1):
+        base_data[pos] = {"phyloP": 0.0, "phastCons": 0.0}
+        
+    phylo_list = conservation_data.get("phyloP100way", []) if conservation_data else []
+    for entry in phylo_list:
+        start_pos = entry.get("start")
+        val = entry.get("value")
+        if start_pos in base_data and val is not None:
+            base_data[start_pos]["phyloP"] = val
+            
+    phast_list = conservation_data.get("phastCons100way", []) if conservation_data else []
+    for entry in phast_list:
+        start_pos = entry.get("start")
+        val = entry.get("value")
+        if start_pos in base_data and val is not None:
+            base_data[start_pos]["phastCons"] = val
+            
+    rows = []
+    for pos, vals in base_data.items():
+        rel_pos = pos - tss if strand == "+" else tss - pos
+        rows.append({
+            "genomic_pos": pos,
+            "distance_to_tss": rel_pos,
+            "phyloP": vals["phyloP"],
+            "phastCons": vals["phastCons"]
+        })
+    df_cons = pd.DataFrame(rows).sort_values("distance_to_tss")
+    df_cons.to_csv(os.path.join(output_dir, f"{gene_name}_conservation.csv"), index=False)
+    
+    # High-Confidence Peak Identification (post-processing)
+    if not df_encode.empty and not df_cons.empty:
+        max_cons_list = []
+        high_conf_list = []
+        for _, row in df_encode.iterrows():
+            try:
+                p_start = int(row["peak_start"])
+                p_end = int(row["peak_end"])
+                peak_scores = df_cons[(df_cons["genomic_pos"] >= p_start) & (df_cons["genomic_pos"] <= p_end)]["phastCons"]
+                max_c = peak_scores.max() if not peak_scores.empty else 0.0
+                max_cons_list.append(max_c)
+                high_conf_list.append(max_c > 0.8)
+            except Exception:
+                max_cons_list.append(0.0)
+                high_conf_list.append(False)
+        df_encode["max_conservation"] = max_cons_list
+        df_encode["high_confidence_site"] = high_conf_list
+    else:
+        df_encode["max_conservation"] = 0.0
+        df_encode["high_confidence_site"] = False
+        
+    df_encode.to_csv(os.path.join(output_dir, f"{gene_name}_encode_hits.csv"), index=False)
+    
+    # Motif Synergy Scan
+    df_synergy = scan_motif_synergy(df_motifs, max_distance=100)
+    df_synergy.to_csv(os.path.join(output_dir, f"{gene_name}_synergy_hotspots.csv"), index=False)
+    
     # 5. Combined Summary
     # Just a simple count summary for now
     biosamples = df_encode['biosample'].unique().tolist() if not df_encode.empty and 'biosample' in df_encode.columns else []
@@ -303,90 +464,137 @@ def plot_binding_summary(df_encode, df_motifs, gene_name, output_dir):
     plt.close()
 
 
-def create_promoter_track_fig(df_encode, df_motifs, promoter_up, promoter_down, gene_name, high_confidence_threshold=None, top_n=None):
-    """Creates a matplotlib figure for the promoter track."""
-    fig, ax = plt.subplots(figsize=(12, 4))
+def create_promoter_track_fig(df_encode, df_motifs, promoter_up, promoter_down, gene_name, high_confidence_threshold=None, top_n=None, df_cons=None, df_synergy=None):
+    """
+    Creates a multi-track matplotlib figure for the promoter region including ChIP peaks, motifs,
+    shaded synergy hotspots, and base-by-base evolutionary conservation tracks.
+    """
+    import numpy as np
+    from matplotlib.lines import Line2D
     
-    # Draw TSS
+    has_cons = df_cons is not None and not df_cons.empty
+    
+    if has_cons:
+        fig, (ax, ax_cons) = plt.subplots(
+            2, 1, 
+            figsize=(12, 8), 
+            sharex=True, 
+            gridspec_kw={'height_ratios': [2, 1]}
+        )
+    else:
+        fig, ax = plt.subplots(figsize=(12, 5))
+        ax_cons = None
+        
+    # Draw TSS on both tracks
     ax.axvline(x=0, color='black', linestyle='--', label='TSS')
+    if ax_cons is not None:
+        ax_cons.axvline(x=0, color='black', linestyle='--')
+        
     ax.set_xlim(-promoter_up, promoter_down)
-    ax.set_xlabel("Distance to TSS (bp)")
-    ax.set_yticks([])
     ax.set_ylim(0, 2)
+    ax.set_ylabel("Epigenetic / Binding Tracks")
+    ax.set_yticks([])
     
+    # Plot Shaded Synergy Hotspots
+    if df_synergy is not None and not df_synergy.empty:
+        for idx, row in df_synergy.iterrows():
+            start_rel = row['start'] - promoter_up
+            end_rel = row['end'] - promoter_up
+            ax.axvspan(start_rel, end_rel, color='orange', alpha=0.15, label='Synergy Hotspot' if idx == 0 else "")
+            ax.text((start_rel + end_rel) / 2, 0.2, "Synergy", color='darkorange', fontsize=7, ha='center', fontweight='bold')
+            
     # Plot Motifs
     if not df_motifs.empty:
         for _, row in df_motifs.iterrows():
             start_rel = row['start'] - promoter_up
             end_rel = row['end'] - promoter_up
-            ax.plot([start_rel, end_rel], [1, 1], linewidth=4, color='blue', alpha=0.5)
-            ax.text((start_rel+end_rel)/2, 1.1, row['tf_name'], ha='center', fontsize=8, color='blue')
+            ax.plot([start_rel, end_rel], [1.0, 1.0], linewidth=5, color='blue', alpha=0.5)
+            ax.text((start_rel+end_rel)/2, 1.1, row['tf_name'], ha='center', fontsize=8, color='blue', fontweight='semibold')
             
     # Plot ENCODE peaks
     if not df_encode.empty:
-        # Filter peaks within window
         window_peaks = df_encode[
             (df_encode['distance_to_tss'] >= -promoter_up) & 
             (df_encode['distance_to_tss'] <= promoter_down)
         ].copy()
         
         if not window_peaks.empty:
-            # Base track (all peaks)
-            # Plot as light red triangles
             for _, row in window_peaks.iterrows():
                 dist = row['distance_to_tss']
-                ax.plot(dist, 1.2, marker='v', color='lightcoral', markersize=6, linestyle='None', alpha=0.6)
+                # Plot base peak
+                ax.plot(dist, 1.3, marker='v', color='lightcoral', markersize=6, linestyle='None', alpha=0.6)
             
-            # High-Confidence Track
+            # High-Confidence Peaks
             high_conf_peaks = pd.DataFrame()
-            
-            # Determine high confidence
-            if top_n is not None:
-                # Sort by signal (col 7) or score (col 5)
-                # We stored 'signal' and 'score' in df_encode
+            if 'high_confidence_site' in window_peaks.columns:
+                high_conf_peaks = window_peaks[window_peaks['high_confidence_site'] == True]
+            elif top_n is not None:
                 if 'signal' in window_peaks.columns and window_peaks['signal'].max() > 0:
                     high_conf_peaks = window_peaks.sort_values('signal', ascending=False).head(top_n)
                 elif 'score' in window_peaks.columns:
                     high_conf_peaks = window_peaks.sort_values('score', ascending=False).head(top_n)
-                else:
-                    high_conf_peaks = window_peaks.head(top_n) # Fallback
-                    
-            elif high_confidence_threshold is not None:
-                if 'signal' in window_peaks.columns and window_peaks['signal'].max() > 0:
-                     high_conf_peaks = window_peaks[window_peaks['signal'] >= high_confidence_threshold]
-                elif 'score' in window_peaks.columns:
-                     high_conf_peaks = window_peaks[window_peaks['score'] >= high_confidence_threshold]
             
-            # Plot High Confidence
             if not high_conf_peaks.empty:
                 for _, row in high_conf_peaks.iterrows():
                     dist = row['distance_to_tss']
-                    ax.plot(dist, 1.25, marker='v', color='red', markersize=10, linestyle='None', label='High-Conf Peak')
-                    # Optional: Add label for signal
+                    ax.plot(dist, 1.35, marker='v', color='red', markersize=10, linestyle='None')
                     val = row.get('signal', row.get('score', ''))
                     if val:
-                        ax.text(dist, 1.35, f"{val:.1f}", ha='center', fontsize=7, rotation=90)
-
-            # Legend
-            # Create custom legend handles
-            from matplotlib.lines import Line2D
+                        ax.text(dist, 1.45, f"{val:.1f}", ha='center', fontsize=7, color='red', rotation=90)
+                        
+            # Build legend
             legend_elements = [
                 Line2D([0], [0], color='black', linestyle='--', label='TSS'),
                 Line2D([0], [0], marker='v', color='lightcoral', label='ENCODE Peak', linestyle='None'),
-                Line2D([0], [0], marker='v', color='red', label='High-Conf Peak', linestyle='None', markersize=10)
+                Line2D([0], [0], marker='v', color='red', label='High-Conf Peak (Conserved)', linestyle='None', markersize=10)
             ]
             if not df_motifs.empty:
                 legend_elements.append(Line2D([0], [0], color='blue', lw=4, label='Motif', alpha=0.5))
+            if df_synergy is not None and not df_synergy.empty:
+                from matplotlib.patches import Patch
+                legend_elements.append(Patch(facecolor='orange', edgecolor='none', alpha=0.2, label='Synergy Hotspot'))
                 
-            ax.legend(handles=legend_elements, loc='upper right')
-
-    ax.set_title(f"TF Binding Sites on {gene_name} Promoter")
+            ax.legend(handles=legend_elements, loc='upper right', fontsize=8)
+            
+    # Plot Evolutionary Conservation
+    if ax_cons is not None:
+        # Sort by distance
+        df_cons_sorted = df_cons.sort_values("distance_to_tss")
+        x_vals = df_cons_sorted["distance_to_tss"].values
+        phast_vals = df_cons_sorted["phastCons"].values
+        phylo_vals = df_cons_sorted["phyloP"].values
+        
+        # Plot phastCons as filled area
+        ax_cons.fill_between(x_vals, phast_vals, color='teal', alpha=0.3, label='phastCons (100-way)')
+        ax_cons.plot(x_vals, phast_vals, color='teal', lw=1.5)
+        
+        ax_cons.set_ylabel("phastCons score")
+        ax_cons.set_ylim(0, 1.1)
+        ax_cons.set_xlabel("Distance to TSS (bp)")
+        
+        # High conservation shading threshold line
+        ax_cons.axhline(y=0.8, color='darkred', linestyle=':', alpha=0.5, label='High Cons. Threshold (0.8)')
+        ax_cons.legend(loc='upper right', fontsize=8)
+        ax_cons.set_title("Evolutionary Conservation (UCSC)", fontsize=10)
+        
+    ax.set_title(f"TF Binding Sites and Epigenetic Tracks on {gene_name} Promoter")
     plt.tight_layout()
     return fig
 
 def plot_promoter_track(df_encode, df_motifs, promoter_up, promoter_down, gene_name, output_dir):
     """Generates and saves the promoter track plot."""
-    fig = create_promoter_track_fig(df_encode, df_motifs, promoter_up, promoter_down, gene_name)
+    cons_path = os.path.join(output_dir, f"{gene_name}_conservation.csv")
+    synergy_path = os.path.join(output_dir, f"{gene_name}_synergy_hotspots.csv")
+    
+    df_cons = None
+    if os.path.exists(cons_path):
+        df_cons = pd.read_csv(cons_path)
+        
+    df_synergy = None
+    if os.path.exists(synergy_path):
+        df_synergy = pd.read_csv(synergy_path)
+        
+    fig = create_promoter_track_fig(df_encode, df_motifs, promoter_up, promoter_down, gene_name, df_cons=df_cons, df_synergy=df_synergy)
     fig.savefig(os.path.join(output_dir, f"{gene_name}_track_plot.png"))
     plt.close(fig)
 
@@ -421,18 +629,11 @@ def generate_bed_output(df_encode, df_motifs, chrom, promoter_start, gene_name, 
                 name = f"{row['tf_name']}_{row['jaspar_id']}"
                 try:
                     # Motifs are relative to promoter start? No, they should be genomic if possible.
-                    # Wait, motifs scan returns relative coordinates usually?
-                    # Let's check motifs.py or assume they are genomic if scan_promoter_with_jaspar returns them.
-                    # Actually, scan_promoter_with_jaspar usually returns relative to sequence start.
                     # We need to convert to genomic.
-                    # For now, let's assume they are relative to promoter_start if strand is +
-                    # This logic might be complex to reconstruct perfectly without seeing motifs.py
-                    # But for now let's just write what we have if it looks like genomic, or skip if unsure.
-                    # If the previous code didn't have this function, maybe it was never implemented fully?
-                    # I'll implement a basic version.
                     pass 
                 except Exception:
                     continue
+
 def find_overlaps_for_experiment(file_path, chrom, p_start_strict, p_end_strict, p_start_loose, p_end_loose, tss, strand, exp, tf):
     """
     Parses a BED file and finds peaks overlapping the promoter region (strict and loose).

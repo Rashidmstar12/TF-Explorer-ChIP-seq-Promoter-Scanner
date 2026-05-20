@@ -9,19 +9,20 @@ import base64
 # Ensure we import the local tf_explorer package, not the installed one
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from tf_explorer import analysis, motifs, comparative, genome_client
+from tf_explorer import analysis, motifs, comparative, genome_client, tcga_client
 import importlib
 importlib.reload(motifs)
 importlib.reload(analysis)
 importlib.reload(comparative)
 importlib.reload(genome_client)
+importlib.reload(tcga_client)
 
 from tf_explorer import primer_design
 importlib.reload(primer_design)
 
 # Set page configuration
 st.set_page_config(
-    page_title="TF-Explorer v1.1",
+    page_title="TF-Explorer v2.0",
     page_icon="🧬",
     layout="wide"
 )
@@ -87,13 +88,290 @@ def plot_cell_line_comparison(summary_df):
     ax.set_title("TF Binding Rate by Cell Line (Strict Window)", fontsize=14)
     ax.set_ylabel("Binding Rate (% of Files)", fontsize=12)
     ax.set_xlabel("Cell Line", fontsize=12)
-    plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
     
     return fig
 
+def get_gtex_cli_path():
+    home = os.path.expanduser("~")
+    return os.path.join(
+        home, 
+        ".gemini", "config", "plugins", "science", "skills", 
+        "gtex_database", "scripts", "gtex_cli.py"
+    )
+
+def get_string_cli_path():
+    home = os.path.expanduser("~")
+    return os.path.join(
+        home, 
+        ".gemini", "config", "plugins", "science", "skills", 
+        "string_database", "scripts", "string_cli.py"
+    )
+
+def fetch_gtex_data(gene_symbol, tf_list):
+    import subprocess
+    import tempfile
+    import json
+    
+    gtex_cli = get_gtex_cli_path()
+    if not os.path.exists(gtex_cli):
+        return None, "GTEx Database skill CLI not found."
+        
+    temp_dir = tempfile.gettempdir()
+    symbols = [gene_symbol] + tf_list
+    gencode_map = {}
+    
+    for sym in symbols:
+        out_id_file = os.path.join(temp_dir, f"gtex_id_{sym}.json")
+        cmd = ["uv", "run", gtex_cli, "resolve-gencode-id", sym, "--output", out_id_file]
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, check=True, shell=True)
+            if os.path.exists(out_id_file):
+                with open(out_id_file, "r") as f:
+                    data = json.load(f)
+                gencode_map[sym] = data.get("gencode_id")
+                try: os.remove(out_id_file)
+                except OSError: pass
+        except Exception:
+            pass
+            
+    if not gencode_map.get(gene_symbol):
+        return None, f"Could not resolve GENCODE ID for target gene '{gene_symbol}'."
+        
+    expression_dfs = []
+    for sym, gid in gencode_map.items():
+        if not gid: continue
+        out_expr_file = os.path.join(temp_dir, f"gtex_expr_{sym}.json")
+        cmd = ["uv", "run", gtex_cli, "get-median-expression", gid, "--output", out_expr_file]
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, check=True, shell=True)
+            if os.path.exists(out_expr_file):
+                with open(out_expr_file, "r") as f:
+                    expr_data = json.load(f)
+                try: os.remove(out_expr_file)
+                except OSError: pass
+                
+                if isinstance(expr_data, list) and len(expr_data) > 0:
+                    rows = []
+                    for entry in expr_data:
+                        rows.append({
+                            "tissue": entry.get("tissueSiteDetailId", "Unknown"),
+                            "TPM": entry.get("median", 0.0),
+                            "Gene": sym
+                        })
+                    df_sym = pd.DataFrame(rows)
+                    expression_dfs.append(df_sym)
+        except Exception:
+            pass
+            
+    if not expression_dfs:
+        return None, "Failed to retrieve median expression data from GTEx."
+        
+    df_combined = pd.concat(expression_dfs, ignore_index=True)
+    return df_combined, None
+
+def plot_gtex_expression(df_combined, gene_symbol):
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
+    target_df = df_combined[df_combined['Gene'] == gene_symbol]
+    top_tissues = target_df.sort_values('TPM', ascending=False).head(20)['tissue'].tolist()
+    
+    df_plot = df_combined[df_combined['tissue'].isin(top_tissues)].copy()
+    df_plot['tissue'] = df_plot['tissue'].apply(lambda x: x.replace('_', ' '))
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Beautiful palette
+    sns.barplot(
+        data=df_plot, 
+        x='tissue', 
+        y='TPM', 
+        hue='Gene', 
+        ax=ax, 
+        palette='Set2'
+    )
+    
+    ax.set_title(f"Baseline Tissue Expression (GTEx) - Top 20 Tissues for {gene_symbol}", fontsize=14, fontweight='bold')
+    ax.set_ylabel("Median Expression (TPM, Log Scale)", fontsize=12)
+    ax.set_xlabel("Tissue Site", fontsize=12)
+    plt.xticks(rotation=45, ha='right', fontsize=9)
+    plt.yscale("log")
+    plt.tight_layout()
+    return fig
+
+def fetch_string_data(gene_symbol, tf_list, species=9606):
+    import subprocess
+    import tempfile
+    import json
+    
+    string_cli = get_string_cli_path()
+    if not os.path.exists(string_cli):
+        return None, None, "STRING Database skill CLI not found."
+        
+    temp_dir = tempfile.gettempdir()
+    identifiers = [gene_symbol] + tf_list
+    
+    out_map_file = os.path.join(temp_dir, "string_mapped.tsv")
+    cmd_map = [
+        "uv", "run", string_cli, "map",
+        "--identifiers"
+    ] + identifiers + [
+        "--species", str(species),
+        "--output", out_map_file
+    ]
+    
+    mapped_ids = []
+    try:
+        subprocess.run(cmd_map, capture_output=True, text=True, check=True, shell=True)
+        if os.path.exists(out_map_file):
+            df_map = pd.read_csv(out_map_file, sep='\t')
+            if not df_map.empty and 'stringId' in df_map.columns:
+                mapped_ids = df_map['stringId'].tolist()
+            try: os.remove(out_map_file)
+            except OSError: pass
+    except Exception:
+        mapped_ids = identifiers
+        
+    if not mapped_ids:
+        mapped_ids = identifiers
+        
+    out_img_file = os.path.join(temp_dir, f"string_network_{gene_symbol}.png")
+    cmd_img = [
+        "uv", "run", string_cli, "image",
+        "--identifiers"
+    ] + mapped_ids + [
+        "--species", str(species),
+        "--format", "highres_image",
+        "--output", out_img_file
+    ]
+    
+    img_bytes = None
+    try:
+        subprocess.run(cmd_img, capture_output=True, text=True, check=True, shell=True)
+        if os.path.exists(out_img_file):
+            with open(out_img_file, "rb") as f:
+                img_bytes = f.read()
+            try: os.remove(out_img_file)
+            except OSError: pass
+    except Exception:
+        pass
+        
+    out_partners_file = os.path.join(temp_dir, "string_partners.tsv")
+    cmd_part = [
+        "uv", "run", string_cli, "partners",
+        "--identifiers"
+    ] + mapped_ids + [
+        "--species", str(species),
+        "--limit", "15",
+        "--output", out_partners_file
+    ]
+    
+    df_partners = pd.DataFrame()
+    try:
+        subprocess.run(cmd_part, capture_output=True, text=True, check=True, shell=True)
+        if os.path.exists(out_partners_file):
+            df_partners = pd.read_csv(out_partners_file, sep='\t')
+            try: os.remove(out_partners_file)
+            except OSError: pass
+    except Exception:
+        pass
+        
+    if img_bytes is None and df_partners.empty:
+        return None, None, "Failed to retrieve STRING network or partner data."
+        
+    return img_bytes, df_partners, None
+
+def run_discovery_mode(gene_name, selected_tss, genome, promoter_up=2000, promoter_down=500, transcript_chrom=None, transcript_strand=None):
+    st.subheader("Discovery Mode: Find TFs")
+    
+    if not gene_name:
+        st.info("Please enter a Gene Symbol in the sidebar to start.")
+        return
+
+    # 1. Define Region
+    up_bp = promoter_up
+    down_bp = promoter_down
+    
+    if st.button("Find TFs Binding to Promoter"):
+        with st.spinner("Searching for TFs binding to {} promoter...".format(gene_name)):
+            if transcript_chrom and transcript_strand:
+                chrom = transcript_chrom
+                strand = transcript_strand
+            else:
+                g_coords = genome_client.get_gene_coordinates(gene_name, genome)
+                if not g_coords:
+                    st.error(f"Could not find coordinates for {gene_name}")
+                    return
+                chrom, start, end, strand = g_coords
+            
+            # Determine TSS
+            if selected_tss is not None:
+                tss = selected_tss
+            else:
+                tss = start if strand == "+" else end
+                
+            # Calculate Region
+            if strand == "+":
+                reg_start = tss - up_bp
+                reg_end = tss + down_bp
+            else:
+                reg_start = tss - down_bp
+                reg_end = tss + up_bp
+                
+            # Search
+            from tf_explorer import encode_client
+            search_genome = genome 
+            st.write(f"DEBUG: Searching region {chrom}:{reg_start}-{reg_end} ({search_genome})")
+            results = encode_client.search_region(chrom, reg_start, reg_end, search_genome)
+            st.write(f"DEBUG: Results found: {len(results) if results else 'None'}")
+            
+            if results is None:
+                st.error("Search timed out or failed. The ENCODE API might be busy. Please try again later.")
+            elif not results:
+                st.warning("No TFs found in this region.")
+            else:
+                st.session_state.discovery_results = results
+                st.success(f"Found {len(results)} TFs!")
+                
+    if 'discovery_results' in st.session_state:
+        results = st.session_state.discovery_results
+        df = pd.DataFrame(results)
+        df['Select'] = False
+        
+        st.markdown("### Found Transcription Factors")
+        st.markdown("Select TFs to perform detailed analysis (Targeted Search).")
+        
+        edited_df = st.data_editor(
+            df,
+            column_config={
+                "Select": st.column_config.CheckboxColumn("Select", default=False),
+                "tf_name": "Transcription Factor",
+                "file_count": "Total Files",
+                "experiment_count": "Experiments",
+                "biosamples": "Cell Lines"
+            },
+            disabled=["tf_name", "file_count", "experiment_count", "biosamples"],
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        selected_tfs = edited_df[edited_df['Select']]['tf_name'].tolist()
+        
+        if selected_tfs:
+            st.write(f"Selected: {', '.join(selected_tfs)}")
+            
+            def on_analyze(tfs):
+                st.session_state['tf_list_input'] = ", ".join(tfs)
+                st.session_state.analysis_mode = "Targeted Search"
+                st.session_state.search_performed = False
+
+            st.button("Analyze Selected TFs", on_click=on_analyze, args=(selected_tfs,))
+
+
+
 def main():
-    st.title("🧬 TF-Explorer v1.3 – ChIP-seq Promoter Scanner")
+    st.title("🧬 TF-Explorer v3.0 – Systems-level Epigenetic Suite")
     st.markdown("""
     Analyze transcription factor binding sites for **ANY GENE**.
     1. **Search** for ENCODE ChIP-seq experiments.
@@ -129,12 +407,24 @@ def main():
     # Gene Input
     gene_name = st.sidebar.text_input("Gene Symbol", value="", help="Enter the official gene symbol (e.g., TP53, MYC).")
 
+    if "analysis_mode" not in st.session_state:
+        st.session_state.analysis_mode = "Targeted Search"
+        
+    mode = st.sidebar.radio(
+        "Analysis Mode", 
+        ["Targeted Search", "Discovery Mode"], 
+        key="analysis_mode",
+        help="Choose 'Targeted Search' if you know the TFs. Choose 'Discovery Mode' to find TFs binding to this gene."
+    )
+
     # Transcript Selection
     if "transcripts" not in st.session_state:
         st.session_state.transcripts = {}
     
     selected_tss = None
     selected_transcript_id = None
+    selected_chrom = None
+    selected_strand = None
     
     if gene_name:
         # Fetch if not already in session or if gene changed
@@ -168,13 +458,72 @@ def main():
             if selected_transcript:
                 selected_tss = selected_transcript['tss']
                 selected_transcript_id = selected_transcript['id']
+                selected_chrom = selected_transcript.get('chrom')
+                selected_strand = selected_transcript.get('strand')
                 st.sidebar.info(f"Using TSS: {selected_tss} ({selected_transcript['strand']})")
         else:
             st.sidebar.warning("No transcripts found. Using default gene coordinates.")
 
-    # TF Input
-    default_tfs = ""
-    tf_input = st.sidebar.text_area("Transcription Factors", value=default_tfs, help="Comma-separated list of TFs to search in ENCODE.")
+    # ENCODE Assay Type
+    assay_type = st.sidebar.selectbox(
+        "ENCODE Assay Type",
+        ["TF ChIP-seq", "Histone ChIP-seq", "DNase-seq"],
+        help="Select the assay type to search for in ENCODE. Histone ChIP-seq allows scanning for histone marks, and DNase-seq scans for chromatin accessibility."
+    )
+    
+    # Dynamic targets label & help
+    if assay_type == "TF ChIP-seq":
+        target_label = "Transcription Factors"
+        target_help = "Comma-separated list of TFs (e.g. YY1, CREB1)."
+        target_placeholder = "e.g. YY1, CREB1"
+    elif assay_type == "Histone ChIP-seq":
+        target_label = "Histone Marks"
+        target_help = "Comma-separated list of Histone Marks (e.g. H3K4me3, H3K27ac)."
+        target_placeholder = "e.g. H3K4me3, H3K27ac"
+    else: # DNase-seq
+        target_label = "Accessibility Label"
+        target_help = "Label to use for the chromatin accessibility track (e.g. DNase)."
+        target_placeholder = "e.g. DNase"
+
+    # Dynamic target input
+    if assay_type == "DNase-seq":
+        tf_input = st.sidebar.text_input(target_label, value="DNase", help=target_help)
+    elif assay_type == "Histone ChIP-seq":
+        common_histones = ["H3K4me3", "H3K27ac", "H3K4me1", "H3K27me3", "H3K9me3", "H3K36me3", "H3K9ac", "H3K4me2", "H4K20me1", "H2AFZ"]
+        selected_histones = st.sidebar.multiselect(
+            "Select Histone Marks",
+            options=common_histones + ["Other (Type custom below)"],
+            default=["H3K4me3", "H3K27ac"],
+            help="Select one or more histone marks to analyze."
+        )
+        
+        custom_histone_input = ""
+        if "Other (Type custom below)" in selected_histones:
+            custom_histone_input = st.sidebar.text_input("Custom Histone Marks", placeholder="e.g. H3K79me2")
+            
+        combined_histones = [h for h in selected_histones if h != "Other (Type custom below)"]
+        if custom_histone_input:
+            combined_histones.extend([ch.strip() for ch in custom_histone_input.split(",") if ch.strip()])
+            
+        tf_input = ",".join(combined_histones)
+    else: # TF ChIP-seq
+        common_tfs = ["CTCF", "SP1", "E2F1", "YY1", "TP53", "MYC", "CREB1"]
+        selected_tfs = st.sidebar.multiselect(
+            "Select Transcription Factors",
+            options=common_tfs + ["Other (Type custom below)"],
+            default=["YY1", "E2F1"],
+            help="Select one or more TFs to search."
+        )
+        
+        custom_tf_input = ""
+        if "Other (Type custom below)" in selected_tfs:
+            custom_tf_input = st.sidebar.text_area("Custom TFs (Comma-separated)", placeholder="e.g. NANOG, OCT4")
+            
+        combined_tfs = [t for t in selected_tfs if t != "Other (Type custom below)"]
+        if custom_tf_input:
+            combined_tfs.extend([ct.strip() for ct in custom_tf_input.split(",") if ct.strip()])
+            
+        tf_input = ",".join(combined_tfs)
     
     # JASPAR Input
     default_jaspar = ""
@@ -189,6 +538,11 @@ def main():
         pwm_threshold = st.slider("PWM Threshold", min_value=0.0, max_value=20.0, value=8.0, step=0.1)
         genome = st.selectbox("Genome Assembly", ["hg38"], index=0)
         force_download = st.checkbox("Force Re-download Files", value=False, help="Check to delete cached files and re-download them. Use if you suspect corruption.")
+
+    if mode == "Discovery Mode":
+        st.sidebar.info("In Discovery Mode, we will search for any TFs binding to the promoter region.")
+        run_discovery_mode(gene_name, selected_tss, genome, promoter_up, promoter_down, selected_chrom, selected_strand)
+        return
     
     # --- Session State ---
     if "encode_results" not in st.session_state:
@@ -201,7 +555,7 @@ def main():
     # Step 1: Search
     if st.sidebar.button("Search ENCODE", type="primary"):
         if not tf_input:
-            st.error("Please enter at least one Transcription Factor.")
+            st.error(f"Please enter at least one {target_label}.")
         else:
             tf_list = [tf.strip() for tf in tf_input.split(",") if tf.strip()]
             st.session_state.encode_results = []
@@ -212,7 +566,7 @@ def main():
                 for tf in tf_list:
                     # Map genome to organism (simple mapping for now)
                     organism = "Homo sapiens" 
-                    results = encode_client.search_encode_tf_chipseq(tf, organism)
+                    results = encode_client.search_encode(tf, assay_type, organism)
                     for res in results:
                         # Filter by selected genome assembly
                         # Handle GRCh38 as equivalent to hg38
@@ -320,7 +674,7 @@ def main():
                             
                             summary_df = analysis.analyze_gene(
                                 gene_name=gene_name,
-                                tf_list=[tf_input],
+                                tf_list=[tf.strip() for tf in tf_input.split(",") if tf.strip()],
                                 experiments_list=selected_experiments,
                                 genome=genome,
                                 promoter_up=promoter_up,
@@ -367,7 +721,8 @@ def main():
                             'tf_input': tf_input,
                             'promoter_up': promoter_up,
                             'promoter_down': promoter_down,
-                            'total_checked': len(selected_experiments)
+                            'total_checked': len(selected_experiments),
+                            'assay_type': assay_type
                         }
                         
                         st.write("Analysis complete!")
@@ -507,28 +862,47 @@ Recommendation:
                 # Plots
                 st.subheader("Visualizations")
                 
+                assay_label = results.get('assay_type', 'TF ChIP-seq')
+                if assay_label == "TF ChIP-seq":
+                    comp_tab_name = "TF Comparison"
+                    count_tab_name = "TF Binding Counts"
+                elif assay_label == "Histone ChIP-seq":
+                    comp_tab_name = "Histone Mark Comparison"
+                    count_tab_name = "Histone Mark Signals"
+                else:
+                    comp_tab_name = "Accessibility Comparison"
+                    count_tab_name = "Accessibility Signals"
+                
                 # Use radio button for navigation to persist state and improve performance
-                view_options = ["Promoter Track", "Cell Line Comparison", "TF Comparison", "Biosample Distribution", "TF Binding Counts", "ChIP Primer Design"]
+                view_options = ["Promoter Track & Synergy", "Evolutionary Conservation", "GTEx Tissue Profiles", "STRING Epigenetic Interactome", "Functional Prediction (TCGA)", "Cell Line Comparison", comp_tab_name, "Biosample Distribution", count_tab_name, "ChIP Primer Design"]
                 view_mode = st.radio("View Results", view_options, horizontal=True, label_visibility="collapsed")
                 
                 st.divider()
                 
-                if view_mode == "Promoter Track":
-                    # Interactive Promoter Track
+                if view_mode == "Promoter Track & Synergy":
+                    # Interactive Promoter Track & Synergy
                     hits_path = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
                     motifs_path = os.path.join(out_dir, f"{gene_name}_motif_predictions.csv")
+                    cons_path = os.path.join(out_dir, f"{gene_name}_conservation.csv")
+                    synergy_path = os.path.join(out_dir, f"{gene_name}_synergy_hotspots.csv")
                     
                     df_encode_plot = pd.DataFrame()
                     df_motifs_plot = pd.DataFrame()
+                    df_cons = None
+                    df_synergy = None
                     
                     if os.path.exists(hits_path):
                         df_encode_plot = pd.read_csv(hits_path)
                     if os.path.exists(motifs_path):
                         df_motifs_plot = pd.read_csv(motifs_path)
+                    if os.path.exists(cons_path):
+                        df_cons = pd.read_csv(cons_path)
+                    if os.path.exists(synergy_path):
+                        df_synergy = pd.read_csv(synergy_path)
                         
                     # UI Controls for High-Peak Track
-                    st.markdown("### High-Peak Visualization")
-                    st.markdown("Overlay high-confidence peaks on the promoter track to see where binding is strongest.")
+                    st.markdown("### Promoter Track & Synergy View")
+                    st.markdown("Overlay high-confidence evolutionary-conserved peaks and synergy hotspots on the promoter track.")
                     
                     col_ctrl1, col_ctrl2 = st.columns(2)
                     with col_ctrl1:
@@ -556,10 +930,20 @@ Recommendation:
                             df_encode_plot, df_motifs_plot, 
                             promoter_up, promoter_down, gene_name,
                             high_confidence_threshold=threshold,
-                            top_n=top_n
+                            top_n=top_n,
+                            df_cons=df_cons,
+                            df_synergy=df_synergy
                         )
                         st.pyplot(fig)
                         
+                        # Display Synergy hotspots table below the plot if found
+                        if df_synergy is not None and not df_synergy.empty:
+                            st.markdown("#### 🌟 Detected TF Motif Synergy Hotspots")
+                            st.markdown("These hotspots show regions where multiple different transcription factors have binding motifs clustered within 100 bp.")
+                            st.dataframe(df_synergy, use_container_width=True)
+                        else:
+                            st.info("No motif synergy hotspots detected (distance within 100 bp between distinct TFs) in this promoter window.")
+
                         if show_high_conf:
                             st.caption("High-Confidence Peaks Table")
                             window_peaks = df_encode_plot[
@@ -583,6 +967,7 @@ Recommendation:
                                 cols = ['peak_chrom', 'peak_start', 'peak_end', 'experiment', 'biosample', 'distance_to_tss']
                                 if 'signal' in high_conf_table.columns: cols.append('signal')
                                 if 'score' in high_conf_table.columns: cols.append('score')
+                                if 'max_conservation' in high_conf_table.columns: cols.append('max_conservation')
                                 
                                 st.dataframe(high_conf_table[cols].sort_values('distance_to_tss'))
                             else:
@@ -590,6 +975,196 @@ Recommendation:
                                 
                     else:
                         st.warning("No data to plot.")
+
+                if view_mode == "Evolutionary Conservation":
+                    st.markdown("### Evolutionary Conservation Profiling")
+                    st.markdown("Analyze baseline evolutionary constraints across the promoter using **UCSC phastCons** and **phyloP** scores.")
+                    
+                    cons_path = os.path.join(out_dir, f"{gene_name}_conservation.csv")
+                    hits_path = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
+                    synergy_path = os.path.join(out_dir, f"{gene_name}_synergy_hotspots.csv")
+                    
+                    df_cons = pd.DataFrame()
+                    df_encode = pd.DataFrame()
+                    df_synergy = pd.DataFrame()
+                    
+                    if os.path.exists(cons_path):
+                        df_cons = pd.read_csv(cons_path)
+                    if os.path.exists(hits_path):
+                        df_encode = pd.read_csv(hits_path)
+                    if os.path.exists(synergy_path):
+                        df_synergy = pd.read_csv(synergy_path)
+                        
+                    if not df_cons.empty:
+                        # Compute base statistics
+                        avg_phast = df_cons["phastCons"].mean()
+                        max_phast = df_cons["phastCons"].max()
+                        avg_phylop = df_cons["phyloP"].mean()
+                        max_phylop = df_cons["phyloP"].max()
+                        
+                        # Style metric cards using columns
+                        mc1, mc2, mc3, mc4 = st.columns(4)
+                        with mc1:
+                            st.metric("Avg phastCons", f"{avg_phast:.3f}")
+                        with mc2:
+                            st.metric("Max phastCons", f"{max_phast:.3f}")
+                        with mc3:
+                            st.metric("Avg phyloP", f"{avg_phylop:.3f}")
+                        with mc4:
+                            st.metric("Max phyloP", f"{max_phylop:.3f}")
+                            
+                        st.divider()
+                        
+                        # 1. High-Confidence Conserved Binding Sites
+                        st.markdown("#### 🎯 High-Confidence Conserved Binding Sites")
+                        st.markdown("Peaks located in genomic regions where maximum `phastCons` score exceeds **0.8** (evolutionarily highly constrained).")
+                        
+                        if not df_encode.empty:
+                            # Filter high-confidence sites
+                            if "high_confidence_site" in df_encode.columns:
+                                df_high_conf = df_encode[df_encode["high_confidence_site"] == True]
+                            else:
+                                df_high_conf = df_encode[df_encode.get("max_conservation", 0.0) > 0.8]
+                                
+                            if not df_high_conf.empty:
+                                cols = ['tf', 'experiment', 'biosample', 'distance_to_tss', 'max_conservation']
+                                if 'signal' in df_high_conf.columns: cols.append('signal')
+                                st.dataframe(df_high_conf[cols].sort_values('max_conservation', ascending=False), use_container_width=True)
+                            else:
+                                st.info("No ChIP-seq peaks are located in high-conservation blocks (max phastCons > 0.8) for this promoter range.")
+                        else:
+                            st.info("No ChIP-seq peak data found to compare with conservation.")
+                            
+                        st.divider()
+                        
+                        # 2. Base-by-Base conservation score table
+                        st.markdown("#### 📊 Base-by-Base Promoter Conservation Scores")
+                        st.markdown("Every nucleotide coordinate in the promoter window with its corresponding phyloP and phastCons scores.")
+                        
+                        st.dataframe(df_cons.sort_values("distance_to_tss"), use_container_width=True)
+                        
+                        # Download button
+                        csv_cons = df_cons.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="Download Base-by-Base Conservation CSV",
+                            data=csv_cons,
+                            file_name=f"{gene_name}_promoter_conservation.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.warning("No UCSC conservation data found for this analysis run.")
+
+                if view_mode == "GTEx Tissue Profiles":
+                    st.markdown("### GTEx Tissue Expression Profiling")
+                    st.markdown("Examine the baseline mRNA expression profile of the target gene and selected transcription factors across 54 normal human tissues.")
+                    
+                    tf_list = [tf.strip() for tf in tf_input.split(",") if tf.strip()]
+                    
+                    # Create cache key
+                    cache_key = f"gtex_{gene_name}_{'_'.join(sorted(tf_list))}"
+                    
+                    if cache_key not in st.session_state:
+                        with st.spinner("Retrieving dynamic median expression data from GTEx database..."):
+                            df_gtex, err = fetch_gtex_data(gene_name, tf_list)
+                            if err:
+                                st.session_state[cache_key] = {"df": None, "error": err}
+                            else:
+                                st.session_state[cache_key] = {"df": df_gtex, "error": None}
+                                
+                    gtex_res = st.session_state[cache_key]
+                    
+                    if gtex_res["error"]:
+                        st.error(gtex_res["error"])
+                    elif gtex_res["df"] is not None and not gtex_res["df"].empty:
+                        df_gtex = gtex_res["df"]
+                        
+                        # Generate and display the plot
+                        fig_gtex = plot_gtex_expression(df_gtex, gene_name)
+                        st.pyplot(fig_gtex)
+                        
+                        st.divider()
+                        
+                        # Detailed tissue expression table
+                        st.markdown("#### 📋 GTEx Tissue Expression Data Table")
+                        st.markdown("Baseline median Transcripts Per Million (TPM) values per tissue site.")
+                        
+                        # Pivot table for better readability
+                        try:
+                            df_pivot = df_gtex.pivot(index='tissue', columns='Gene', values='TPM').reset_index()
+                            # Clean tissue names
+                            df_pivot['tissue'] = df_pivot['tissue'].apply(lambda x: x.replace('_', ' '))
+                            st.dataframe(df_pivot, use_container_width=True)
+                            
+                            csv_gtex = df_pivot.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                label="Download GTEx Expression CSV",
+                                data=csv_gtex,
+                                file_name=f"{gene_name}_gtex_expression.csv",
+                                mime="text/csv"
+                            )
+                        except Exception as e:
+                            st.dataframe(df_gtex, use_container_width=True)
+                    else:
+                        st.warning("No baseline expression data returned from GTEx for the queried genes.")
+
+                if view_mode == "STRING Epigenetic Interactome":
+                    st.markdown("### STRING Epigenetic Interactome Network")
+                    st.markdown("Visualize the macromolecular and protein-protein physical/functional interactions of the epigenetic complex between the target gene and regulatory transcription factors.")
+                    
+                    tf_list = [tf.strip() for tf in tf_input.split(",") if tf.strip()]
+                    
+                    # Create cache key
+                    cache_key = f"string_{gene_name}_{'_'.join(sorted(tf_list))}"
+                    
+                    if cache_key not in st.session_state:
+                        with st.spinner("Fetching protein interaction networks and partners from STRING database..."):
+                            img_bytes, df_partners, err = fetch_string_data(gene_name, tf_list)
+                            if err:
+                                st.session_state[cache_key] = {"img": None, "partners": None, "error": err}
+                            else:
+                                st.session_state[cache_key] = {"img": img_bytes, "partners": df_partners, "error": None}
+                                
+                    string_res = st.session_state[cache_key]
+                    
+                    if string_res["error"]:
+                        st.error(string_res["error"])
+                    else:
+                        # Display Network PNG
+                        if string_res["img"] is not None:
+                            st.markdown("#### 🕸️ Interaction Network Graph")
+                            st.image(string_res["img"], caption=f"STRING Network for {gene_name} & Associated TFs", use_container_width=True)
+                        else:
+                            st.info("No network visualization available.")
+                            
+                        st.divider()
+                        
+                        # Display partners table
+                        if string_res["partners"] is not None and not string_res["partners"].empty:
+                            st.markdown("#### 🤝 Physical & Functional Interaction Partners")
+                            st.markdown("Top predicted interaction partners, including their combined confidence scores.")
+                            
+                            df_part = string_res["partners"].copy()
+                            # Rename columns for premium look
+                            rename_cols = {
+                                "stringId_A": "STRING ID A",
+                                "stringId_B": "STRING ID B",
+                                "preferredName_A": "Node A",
+                                "preferredName_B": "Node B",
+                                "score": "Combined Score",
+                                "nscore": "Gene Neighborhood",
+                                "ascore": "Gene Co-occurrence",
+                                "escore": "Experimental Evidence",
+                                "dscore": "Database Evidence",
+                                "tscore": "Textmining Score"
+                            }
+                            # Filter and rename only columns that exist
+                            part_cols = [c for c in rename_cols.keys() if c in df_part.columns]
+                            df_display = df_part[part_cols].rename(columns={c: rename_cols[c] for c in part_cols})
+                            
+                            st.dataframe(df_display.sort_values(by="Combined Score", ascending=False) if "Combined Score" in df_display.columns else df_display, use_container_width=True)
+                        else:
+                            st.info("No detailed interactome partners table returned from STRING.")
+
 
                 if view_mode == "Cell Line Comparison":
                     st.markdown("### Cell Line Comparison")
@@ -673,9 +1248,10 @@ Recommendation:
                         st.warning("No biosample data available in the analysis results.")
 
 
-                if view_mode == "TF Comparison":
-                    st.markdown("### TF Comparison")
-                    st.markdown("Compare binding patterns of different Transcription Factors on this gene.")
+                if view_mode == comp_tab_name:
+                    feature_type_label = "Transcription Factor" if assay_label == "TF ChIP-seq" else ("Histone Mark" if assay_label == "Histone ChIP-seq" else "Accessibility Mark")
+                    st.markdown(f"### {feature_type_label} Comparison")
+                    st.markdown(f"Compare binding/accessibility patterns of different {feature_type_label}s on this gene.")
                     
                     hits_path_tf = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
                     if os.path.exists(hits_path_tf):
@@ -684,11 +1260,11 @@ Recommendation:
                             available_tfs = sorted([x for x in hits_df_tf['tf'].unique()])
                             
                             if len(available_tfs) >= 2:
-                                selected_tfs = st.multiselect("Select TFs to Compare", available_tfs, default=available_tfs[:2])
+                                selected_tfs = st.multiselect(f"Select {feature_type_label}s to Compare", available_tfs, default=available_tfs[:2])
                                 
-                                if st.button("Compare Selected TFs"):
+                                if st.button(f"Compare Selected {feature_type_label}s"):
                                     if len(selected_tfs) < 2:
-                                        st.error("Please select at least two TFs.")
+                                        st.error(f"Please select at least two {feature_type_label}s.")
                                     else:
                                         # Run Comparative Analysis with group_by='tf'
                                         comp_analysis_tf = comparative.ComparativeAnalysis(hits_df_tf, selected_tfs, gene_name, group_by='tf')
@@ -699,7 +1275,7 @@ Recommendation:
                                         st.markdown("##### Results")
                                         
                                         # 1. Multi-Track Plot
-                                        st.markdown("**Comparative Binding Tracks**")
+                                        st.markdown(f"**Comparative {feature_type_label} Tracks**")
                                         fig_tracks_tf = comp_analysis_tf.plot_comparison(promoter_up, promoter_down)
                                         st.pyplot(fig_tracks_tf)
                                         
@@ -715,14 +1291,14 @@ Recommendation:
                                         with st.expander("Jaccard Similarity Matrix", expanded=True):
                                             st.dataframe(metrics_tf['jaccard_matrix'].style.format("{:.2f}"))
                                             
-                                        with st.expander("Unique Binding Sites (bp)", expanded=True):
-                                            st.caption("Number of base pairs covered uniquely by each TF (not shared with others).")
-                                            unique_tf_df = pd.DataFrame(list(metrics_tf['unique_bases_counts'].items()), columns=['TF', 'Unique BP'])
-                                            st.bar_chart(unique_tf_df.set_index('TF'))
+                                        with st.expander(f"Unique {feature_type_label} Regions (bp)", expanded=True):
+                                            st.caption(f"Number of base pairs covered uniquely by each {feature_type_label} (not shared with others).")
+                                            unique_tf_df = pd.DataFrame(list(metrics_tf['unique_bases_counts'].items()), columns=[feature_type_label, 'Unique BP'])
+                                            st.bar_chart(unique_tf_df.set_index(feature_type_label))
                             else:
-                                st.warning(f"Need at least 2 different TFs in the results to perform comparison. Found: {available_tfs}")
+                                st.warning(f"Need at least 2 different {feature_type_label}s in the results to perform comparison. Found: {available_tfs}")
                         else:
-                            st.warning("No TF data available.")
+                            st.warning(f"No {feature_type_label} data available.")
                     else:
                         st.warning("No analysis results found.")
 
@@ -737,10 +1313,10 @@ Recommendation:
                         else:
                             st.info("No biosample data available.")
 
-                if view_mode == "TF Binding Counts":
+                if view_mode == count_tab_name:
                     plot_path = os.path.join(out_dir, f"{gene_name}_tf_binding_plot.png")
                     if os.path.exists(plot_path):
-                        st.image(plot_path, caption=f"TF Binding Summary for {gene_name}", use_container_width=True)
+                        st.image(plot_path, caption=f"Signal/Binding Summary for {gene_name}", use_container_width=True)
                     else:
                         st.warning("Plot not generated.")
 
@@ -947,18 +1523,24 @@ Recommendation:
                                                 fp_loc = fp_idx - saved_ctx_up
                                                 rp_loc = rp_idx - saved_ctx_up
                                                 
+                                                # Calculate safety metrics
+                                                safety_res = primer_design.check_primer_safety(fp, rp)
+                                                safety_status = safety_res.get("safety_status", "🟢 Safe")
+
                                                 # Add to CSV data
                                                 csv_data.append({
                                                     "Primer Name": f"FP_{fp_loc}",
                                                     "Sequence": fp,
                                                     "Tm": round(tm_f, 2),
-                                                    "Amplicon Size": prod
+                                                    "Amplicon Size": prod,
+                                                    "Safety Status": safety_status
                                                 })
                                                 csv_data.append({
                                                     "Primer Name": f"RP_{rp_loc}",
                                                     "Sequence": rp,
                                                     "Tm": round(tm_r, 2),
-                                                    "Amplicon Size": prod
+                                                    "Amplicon Size": prod,
+                                                    "Safety Status": safety_status
                                                 })
                                                 
                                                 c1, c2, c3 = st.columns(3)
@@ -971,9 +1553,16 @@ Recommendation:
                                                     st.code(rp)
                                                     st.caption(f"Tm: {tm_r:.1f} | Loc: **{rp_loc}**")
                                                 with c3:
-                                                    st.markdown("**Product**")
-                                                    st.write(f"{prod} bp")
-                                                    st.caption(f"Region: {fp_loc} to {rp_loc}")
+                                                    st.markdown("**Product & Safety**")
+                                                    st.write(f"Size: **{prod} bp**")
+                                                    st.markdown(f"Status: **{safety_status}**")
+                                                    
+                                                with st.expander(f"🔬 Secondary Structure Details ({name})", expanded=False):
+                                                    st.markdown(f"**Forward Primer Hairpin:** Tm = {safety_res.get('fp_hairpin_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('fp_hairpin_dg', 0.0):.2f} kcal/mol")
+                                                    st.markdown(f"**Reverse Primer Hairpin:** Tm = {safety_res.get('rp_hairpin_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('rp_hairpin_dg', 0.0):.2f} kcal/mol")
+                                                    st.markdown(f"**Forward Homodimer:** Tm = {safety_res.get('fp_homodimer_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('fp_homodimer_dg', 0.0):.2f} kcal/mol")
+                                                    st.markdown(f"**Reverse Homodimer:** Tm = {safety_res.get('rp_homodimer_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('rp_homodimer_dg', 0.0):.2f} kcal/mol")
+                                                    st.markdown(f"**Primer Heterodimer:** Tm = {safety_res.get('heterodimer_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('heterodimer_dg', 0.0):.2f} kcal/mol")
                                                     
                                                     # Alignment Check Button
                                                     if st.button(f"Check Alignment ({name})", key=f"chk_{name}"):
