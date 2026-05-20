@@ -1,86 +1,102 @@
-# TF-Explorer v1.3 – ChIP-seq Promoter Scanner
+# 🧬 TF-Explorer v3.0 – Systems-Level Epigenetic Suite
 
-A general Python command-line tool and **Streamlit Web App** to analyze transcription factor (TF) binding sites for **ANY GENE**.
+A comprehensive Python suite and interactive **Streamlit Web Application** designed for high-resolution transcription factor (TF) ChIP-seq peak scanning, base-by-base evolutionary constraint profiling, and systems-level macromolecular interactome correlation for **ANY HUMAN GENE**.
 
-## Features
+---
 
-- **ENCODE Integration**: Query and download TF ChIP-seq peaks.
-- **Gene Agnostic**: Works for any human gene (e.g., PWWP2A, TP53, MYC).
-- **Interactive GUI**: User-friendly Streamlit interface.
-- **Transcript Selection**: Select specific transcripts to ensure accurate TSS targeting.
-- **Interactive Primer Design**: Design ChIP primers with a visual peak distribution plot.
-- **Persistent View State**: Switch between result tabs without losing your place.
-- **High-Peak Visualization**: Overlay high-confidence peaks on the promoter track.
-- **Strict & Loose Windows**: Analyze binding in both strict promoter regions and wider (±5kb) windows.
-- **File-Based Counting**: Accurate reporting of total files/samples analyzed.
-- **Motif Analysis**: Predict binding sites using JASPAR PWMs.
-- **Visualization**: Generate plots of binding density and peak locations.
+## 🚀 Key Upgrades & Features in v3.0
 
-## Installation
+### 1. Unified Multi-Track Promoter Track & Synergy Visualizer
+* **Evolutionary Overlay:** View base-by-base `phastCons` / `phyloP` conservation plots overlaying ChIP-seq peaks, motif predictions, and regulatory spans.
+* **Motif Synergy Scan:** Automatically highlights clusters where multiple different TFs bind in close proximity (within a 100 bp window) as shaded synergy hotspots.
+
+### 2. UCSC Evolutionary Conservation Profiling
+* **Constraint Metrics:** Computes average and maximum constraint values across the targeted promoter coordinates.
+* **High-Confidence Conserved Peaks:** Automatically extracts and tabulates peaks overlapping genomic regions with $phastCons > 0.8$.
+* **Nucleotide-Level Grid:** Explores base-by-base conservation values with full search, sorting, and CSV export.
+
+### 3. GTEx Baseline Cross-Tissue Expression Correlation
+* **TPM Expression Profiles:** Fetches and displays target gene and TF baseline mRNA expression levels across 54 non-diseased human tissues.
+* **Log-Scale Grouped Visuals:** Plots comparative bar charts side-by-side using log-scaling to compare high-expression target genes and low-expression TFs seamlessly.
+* **Subprocess Caching:** Leverages custom `st.session_state` caching for high-speed sub-millisecond tab switching.
+
+### 4. STRING Epigenetic Interactome Visualization
+* **Macromolecular Networks:** Renders a high-resolution macromolecular protein-protein network mapping physical and functional partners.
+* **Interactions Table:** Maps physical database, neighborhood, co-occurrence, and textmining confidence values in a searchable grid.
+
+### 5. Advanced Thermodynamics ChIP Primer Design
+* **Thermodynamic Safety Checks:** Calculates primer hairpins, homodimers, and heterodimers using `primer3-py` (`calcHairpin`, `calcHomodimer`, `calcHeterodimer`).
+* **Interactive Safety Badges:** Displays interactive color-coded status badges ("SAFE" vs "WARNING") for primer pairs.
+
+---
+
+## 💻 Installation & Setup
+
+Install the required packages directly using pip:
 
 ```bash
 pip install -r requirements.txt
 pip install .
 ```
 
-## How to Run Locally
+### 🧬 Science Skills Prerequisite
+The GTEx, STRING, and UCSC Evolutionary databases leverage deep integration with locally pre-installed **Science Skills** under your agent's config folder. Make sure your shell has access to Python 3.12+ and `primer3-py`.
 
-To quickly verify the installation and see the tool in action, you can run the provided demo script:
+---
 
-1.  Open a terminal in the project directory.
-2.  Run the `run_demo.bat` script:
-    ```cmd
-    run_demo.bat
-    ```
-    Or run the command directly:
-    ```bash
-    py -m tf_explorer.cli --gene PWWP2A --tf-list "E2F1,YY1" --jaspar-ids "MA0024.3,MA0095.2" --bed-output --plot-track --out demo_results
-    ```
+## 🏁 How to Run
 
-This will analyze the **PWWP2A** gene for **E2F1** and **YY1** binding sites, generating results in the `demo_results` folder.
+### 🖥️ Streamlit Web Interface (Recommended)
+To run the full Systems-level Epigenetic Suite:
 
-## GUI Usage
+```bash
+py -m streamlit run tf_explorer/app.py
+```
+Or use the shortcut script:
+```cmd
+run_gui.bat
+```
 
-To use the interactive web interface:
-
-1.  Run the `run_gui.bat` script:
-    ```cmd
-    run_gui.bat
-    ```
-    Or run via command line:
-    ```bash
-    py -m streamlit run tf_explorer/app.py
-    ```
-2.  The app will open in your default web browser.
-
-## CLI Usage
+### ⌨️ Command Line Interface (CLI)
+For quick general peak-scanning:
 
 ```bash
 tf-explorer \
   --genome hg38 \
   --gene PWWP2A \
-  --tf-list "E2F1,YY1,MYC,CREB1" \
+  --tf-list "E2F1,YY1,MYC" \
   --jaspar-ids "MA0024.1,MA0095.1" \
   --promoter-up 2000 \
   --promoter-down 500 \
   --out results/
 ```
 
-### Arguments
+### 🧪 Run the Verification Pipeline
+To test the systems database connectivity, Windows subprocess execution, and session-state caching:
+```bash
+py C:\Users\rashi\.gemini\antigravity\brain\5d40b0db-f7c1-4512-baf3-529cf5ec2848/scratch/verify_upgrades.py
+```
 
-- `--gene`: Target gene symbol (e.g., "TP53").
-- `--tf-list`: Comma-separated list of TFs to search in ENCODE (e.g., "E2F1,MYC").
-- `--jaspar-ids`: Comma-separated list of JASPAR Matrix IDs for PWM scanning (e.g., "MA0139.1").
-- `--genome`: Genome assembly (default: "hg38").
-- `--promoter-up`: Base pairs upstream of TSS (default: 2000).
-- `--promoter-down`: Base pairs downstream of TSS (default: 500).
-- `--threshold`: PWM score threshold (default: 8.0).
-- `--out`: Output directory.
+---
 
-## Output
+## 🔬 CLI Arguments & Options
 
-The tool generates:
-- `[GENE]_encode_hits.csv`: ENCODE peaks overlapping the promoter.
-- `[GENE]_motif_predictions.csv`: Predicted binding sites from JASPAR.
-- `[GENE]_combined_summary.csv`: Summary of findings.
-- `[GENE]_tf_binding_plot.png`: Visualization.
+* `--gene`: Target gene symbol (e.g., `"TP53"`, `"GAPDH"`).
+* `--tf-list`: Comma-separated list of TFs to search in ENCODE (e.g., `"E2F1,YY1"`).
+* `--jaspar-ids`: Comma-separated list of JASPAR Matrix IDs for PWM scanning (e.g., `"MA0139.1"`).
+* `--genome`: Genome assembly (default: `"hg38"`).
+* `--promoter-up`: Base pairs upstream of Transcription Start Site (default: `2000`).
+* `--promoter-down`: Base pairs downstream of TSS (default: `500`).
+* `--threshold`: JASPAR PWM score threshold (default: `8.0`).
+* `--out`: Output directory.
+
+---
+
+## 📂 Output File Structure
+
+Upon running an analysis, the suite generates:
+* `[GENE]_encode_hits.csv`: ENCODE ChIP-seq peaks overlapping the promoter coordinates.
+* `[GENE]_motif_predictions.csv`: JASPAR predicted binding motifs inside the region.
+* `[GENE]_conservation.csv`: Base-by-base phyloP/phastCons UCSC constraint values.
+* `[GENE]_synergy_hotspots.csv`: Transcription factor binding sites overlapping within 100 bp.
+* `[GENE]_tcga_summary.csv`: Patient correlation scores across selected cancers.
