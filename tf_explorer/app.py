@@ -857,7 +857,71 @@ Recommendation:
                     - Verify that the promoter region ({promoter_up}bp upstream) covers the expected binding site.
                     """)
                 
-                st.download_button("Download Report", report_text, file_name=f"{gene_name}_analysis_report.txt")
+                col_rep1, col_rep2 = st.columns(2)
+                with col_rep1:
+                    st.download_button("Download Report (TXT) 📄", report_text, file_name=f"{gene_name}_analysis_report.txt", use_container_width=True)
+                with col_rep2:
+                    try:
+                        from tf_explorer import report_generator
+                        tf_list = [tf.strip() for tf in tf_input.split(",") if tf.strip()]
+                        
+                        df_encode_plot = pd.DataFrame()
+                        df_motifs_plot = pd.DataFrame()
+                        df_cons = None
+                        df_synergy = None
+                        df_gtex = None
+                        string_res = None
+                        primer_results = None
+                        
+                        hits_path = os.path.join(out_dir, f"{gene_name}_encode_hits.csv")
+                        motifs_path = os.path.join(out_dir, f"{gene_name}_motif_predictions.csv")
+                        cons_path = os.path.join(out_dir, f"{gene_name}_conservation.csv")
+                        synergy_path = os.path.join(out_dir, f"{gene_name}_synergy_hotspots.csv")
+                        
+                        if os.path.exists(hits_path):
+                            df_encode_plot = pd.read_csv(hits_path)
+                        if os.path.exists(motifs_path):
+                            df_motifs_plot = pd.read_csv(motifs_path)
+                        if os.path.exists(cons_path):
+                            df_cons = pd.read_csv(cons_path)
+                        if os.path.exists(synergy_path):
+                            df_synergy = pd.read_csv(synergy_path)
+                            
+                        gtex_cache_key = f"gtex_{gene_name}_{'_'.join(sorted(tf_list))}"
+                        if gtex_cache_key in st.session_state and st.session_state[gtex_cache_key]["error"] is None:
+                            df_gtex = st.session_state[gtex_cache_key]["df"]
+                            
+                        string_cache_key = f"string_{gene_name}_{'_'.join(sorted(tf_list))}"
+                        if string_cache_key in st.session_state and st.session_state[string_cache_key]["error"] is None:
+                            string_res = st.session_state[string_cache_key]
+                            
+                        if 'chip_primer_results' in st.session_state:
+                            primer_results = st.session_state['chip_primer_results']
+                            
+                        doc_stream = report_generator.generate_report_docx(
+                            gene_name=gene_name,
+                            tf_list=tf_list,
+                            promoter_up=promoter_up,
+                            promoter_down=promoter_down,
+                            genome=genome,
+                            df_encode=df_encode_plot,
+                            df_motifs=df_motifs_plot,
+                            df_cons=df_cons,
+                            df_synergy=df_synergy,
+                            df_gtex=df_gtex,
+                            string_res=string_res,
+                            primer_results=primer_results
+                        )
+                        
+                        st.download_button(
+                            label="Download Full Word Report (.docx) 📝",
+                            data=doc_stream,
+                            file_name=f"{gene_name}_complete_research_report.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.warning(f"Word Exporter unavailable: {e}")
 
                 # Plots
                 st.subheader("Visualizations")
@@ -935,6 +999,27 @@ Recommendation:
                             df_synergy=df_synergy
                         )
                         st.pyplot(fig)
+                        
+                        st.markdown("---")
+                        st.subheader("🌐 Premium Interactive Track Browser")
+                        try:
+                            from tf_explorer import browser_svg
+                            svg_html = browser_svg.generate_interactive_genome_svg(
+                                df_encode_plot, df_motifs_plot, df_cons, df_synergy,
+                                promoter_up, promoter_down, gene_name,
+                                top_n=top_n, threshold=threshold
+                            )
+                            st.components.v1.html(svg_html, height=450, scrolling=False)
+                            st.download_button(
+                                label="Download Standalone Interactive Browser Map (HTML) 🌐",
+                                data=svg_html,
+                                file_name=f"{gene_name}_interactive_tracks.html",
+                                mime="text/html",
+                                use_container_width=True
+                            )
+                        except Exception as e:
+                            st.error(f"Error rendering interactive browser: {e}")
+
                         
                         # Display Synergy hotspots table below the plot if found
                         if df_synergy is not None and not df_synergy.empty:
