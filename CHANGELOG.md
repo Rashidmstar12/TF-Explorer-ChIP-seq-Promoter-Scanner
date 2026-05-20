@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.0.0] - 2026-05-20
+
+### Added
+- **Unified Multi-Track Promoter View:** Visualizes base-by-base UCSC Evolutionary Conservation (`phastCons`/`phyloP`) alongside ENCODE ChIP-seq peaks, JASPAR motifs, and shaded transcription factor synergy hotspots.
+- **UCSC Evolutionary Conservation Profiling:** Integrates nucleotide-level constraint metrics, dynamic average/maximum score cards, high-confidence conserved peak filtering ($phastCons > 0.8$), and interactive database grids.
+- **GTEx Baseline Tissue Expression:** Displays comparative baseline tissue mRNA profiles (TPM) across 54 non-diseased human tissues using side-by-side log-scaled bar charts for target genes and low-expression TFs.
+- **STRING Epigenetic Interactome:** Maps macromolecular protein-protein networks and details interaction scores (neighborhood, database, co-occurrence, textmining) in interactive search grids.
+- **Thermodynamic Primer Design:** Calculates hairpins, homodimers, and heterodimers using `primer3-py` thermodynamics (`calcHairpin`, `calcHomodimer`, `calcHeterodimer`), rendering interactive color-coded safety badges ("SAFE" vs "WARNING").
+- **Subprocess Session-State Caching:** Implemented full query caching under Streamlit's `st.session_state` (`gtex_{gene}` and `string_{gene}`) for sub-millisecond tab switching.
+
+## [1.3.0] - 2026-05-15
+
+### Added
+- **Transcript Selection:** High-resolution selection of genomic transcripts for precise promoter window targeting.
+- **Primer Design Plot:** Stacks tiling strategies and region constraints visually.
+- **Persistent Tabs:** Stores configuration and analysis inputs persistently in the UI session.
+
 ## [1.2.0] - 2025-11-30
 
 ### Added

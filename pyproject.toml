@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tf-explorer"
-version = "0.1.0"
+version = "3.0.0"
 description = "A tool to explore TF binding sites for any gene using ENCODE and JASPAR."
 authors = [
   { name="Antigravity", email="antigravity@example.com" },

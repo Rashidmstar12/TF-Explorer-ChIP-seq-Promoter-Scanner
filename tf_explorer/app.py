@@ -22,7 +22,7 @@ importlib.reload(primer_design)
 
 # Set page configuration
 st.set_page_config(
-    page_title="TF-Explorer v2.0",
+    page_title="TF-Explorer v3.0",
     page_icon="🧬",
     layout="wide"
 )
@@ -1558,11 +1558,11 @@ Recommendation:
                                                     st.markdown(f"Status: **{safety_status}**")
                                                     
                                                 with st.expander(f"🔬 Secondary Structure Details ({name})", expanded=False):
-                                                    st.markdown(f"**Forward Primer Hairpin:** Tm = {safety_res.get('fp_hairpin_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('fp_hairpin_dg', 0.0):.2f} kcal/mol")
-                                                    st.markdown(f"**Reverse Primer Hairpin:** Tm = {safety_res.get('rp_hairpin_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('rp_hairpin_dg', 0.0):.2f} kcal/mol")
-                                                    st.markdown(f"**Forward Homodimer:** Tm = {safety_res.get('fp_homodimer_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('fp_homodimer_dg', 0.0):.2f} kcal/mol")
-                                                    st.markdown(f"**Reverse Homodimer:** Tm = {safety_res.get('rp_homodimer_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('rp_homodimer_dg', 0.0):.2f} kcal/mol")
-                                                    st.markdown(f"**Primer Heterodimer:** Tm = {safety_res.get('heterodimer_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('heterodimer_dg', 0.0):.2f} kcal/mol")
+                                                    st.markdown(fr"**Forward Primer Hairpin:** Tm = {safety_res.get('fp_hairpin_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('fp_hairpin_dg', 0.0):.2f} kcal/mol")
+                                                    st.markdown(fr"**Reverse Primer Hairpin:** Tm = {safety_res.get('rp_hairpin_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('rp_hairpin_dg', 0.0):.2f} kcal/mol")
+                                                    st.markdown(fr"**Forward Homodimer:** Tm = {safety_res.get('fp_homodimer_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('fp_homodimer_dg', 0.0):.2f} kcal/mol")
+                                                    st.markdown(fr"**Reverse Homodimer:** Tm = {safety_res.get('rp_homodimer_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('rp_homodimer_dg', 0.0):.2f} kcal/mol")
+                                                    st.markdown(fr"**Primer Heterodimer:** Tm = {safety_res.get('heterodimer_tm', 0.0):.1f}°C, $\Delta G$ = {safety_res.get('heterodimer_dg', 0.0):.2f} kcal/mol")
                                                     
                                                     # Alignment Check Button
                                                     if st.button(f"Check Alignment ({name})", key=f"chk_{name}"):
