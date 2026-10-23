@@ -183,21 +183,86 @@ def build_validated_configuration(
         clean_win = window_name.replace(" ", "_").replace("[", "").replace("]", "")
         config_id = f"{gene_symbol}_{biosample}_{clean_win}_{encode_file_accession}"
 
-    # 2. Locate source BED file
+    # 2. Infer or verify chromosome
+    chrom_to_search = chromosome
+    if not chrom_to_search:
+        gene_chrom_map = {
+            "CDK4": "chr12", "TFF1": "chr21", "TP53": "chr17",
+            "CDKN1A": "chr6", "CTCF": "chr16", "MYC": "chr8", "CCND1": "chr11"
+        }
+        chrom_to_search = gene_chrom_map.get(gene_symbol.upper(), "")
+
+    # 3. Deterministic transcript version resolution & validation preflight
+    target_transcript_id = transcript_id
+    resolution_note = None
+    transcript_mismatch_error = None
+    if transcript_id:
+        resolved_tx, res_note = resolve_transcript_version(gene_symbol, transcript_id)
+        if resolved_tx:
+            target_transcript_id = resolved_tx
+            resolution_note = res_note
+        else:
+            # Case C: Unsupported/legacy transcript version fails closed immediately
+            target_transcript_id = transcript_id
+            transcript_mismatch_error = res_note
+
+    if transcript_mismatch_error:
+        notes_list = [f"Requested transcript: {transcript_id}"]
+        if resolution_note:
+            notes_list.append(resolution_note)
+        return EvidenceConfiguration(
+            config_id=config_id,
+            gene_symbol=gene_symbol.upper(),
+            transcript_id=target_transcript_id,
+            canonical_tss=canonical_tss,
+            strand=strand,
+            assembly=assembly,
+            chromosome=chrom_to_search,
+            is_mane_select=is_mane_select,
+            is_mane_plus_clinical=is_mane_plus_clinical,
+            mane_status=mane_status,
+            window_name=window_name,
+            window_start_offset=window_start_offset,
+            window_end_offset=window_end_offset,
+            promoter_upstream=abs(window_start_offset),
+            promoter_downstream=abs(window_end_offset),
+            promoter_start=promoter_start,
+            promoter_end=promoter_end,
+            tf_target=tf_target.upper(),
+            biosample=biosample,
+            encode_experiment_accession=encode_experiment_accession,
+            encode_file_accession=encode_file_accession,
+            treatment_context=treatment_context,
+            genetic_modification_context=genetic_modification_context,
+            processing_tier=processing_tier,
+            is_authenticated=False,
+            auth_status="GENE_TRANSCRIPT_MISMATCH",
+            observation_status="SOURCE_NOT_VERIFIED",
+            evidence_status=EvidenceInterpretation.SOURCE_NOT_VERIFIED,
+            exclusion_reason=transcript_mismatch_error,
+            notes=notes_list
+        )
+
+    # 4. Locate source BED file
     bed_file = custom_bed_path or find_source_bed_file(encode_file_accession)
     if authenticator is None:
         authenticator = PrimaryPeakAuthenticator()
 
-    # Fail closed if file is missing
+    # Fail closed if source BED file is missing on local disk (Case A and Case B)
     if bed_file is None or not bed_file.exists():
+        notes_list = []
+        if resolution_note:
+            notes_list.append(resolution_note)
+        if transcript_id and target_transcript_id != transcript_id:
+            notes_list.append(f"Original requested transcript: {transcript_id}")
         return EvidenceConfiguration(
             config_id=config_id,
             gene_symbol=gene_symbol.upper(),
-            transcript_id=transcript_id,
+            transcript_id=target_transcript_id,
             canonical_tss=canonical_tss,
             strand=strand,
             assembly=assembly,
-            chromosome=chromosome,
+            chromosome=chrom_to_search,
             is_mane_select=is_mane_select,
             is_mane_plus_clinical=is_mane_plus_clinical,
             mane_status=mane_status,
@@ -219,28 +284,11 @@ def build_validated_configuration(
             auth_status="SOURCE_UNAVAILABLE",
             observation_status="SOURCE_UNAVAILABLE",
             evidence_status=EvidenceInterpretation.SOURCE_UNAVAILABLE,
-            exclusion_reason=f"Primary BED file {encode_file_accession} not found on local disk"
+            exclusion_reason=f"Primary BED file {encode_file_accession} not found on local disk",
+            notes=notes_list
         )
 
-    # 3. Infer or verify chromosome
-    chrom_to_search = chromosome
-    if not chrom_to_search:
-        gene_chrom_map = {
-            "CDK4": "chr12", "TFF1": "chr21", "TP53": "chr17",
-            "CDKN1A": "chr6", "CTCF": "chr16", "MYC": "chr8", "CCND1": "chr11"
-        }
-        chrom_to_search = gene_chrom_map.get(gene_symbol.upper(), "")
-
-    # 3b. Resolve transcript version against authoritative pinned references
-    target_transcript_id = transcript_id
-    resolution_note = None
-    if transcript_id:
-        resolved_tx, res_note = resolve_transcript_version(gene_symbol, transcript_id)
-        if resolved_tx:
-            target_transcript_id = resolved_tx
-            resolution_note = res_note
-
-    # 4. Strict 12-point Source-Identity and Data Provenance Contract
+    # 5. Strict 12-point Source-Identity and Data Provenance Contract
     contract_outcome = verify_source_identity_contract(
         file_accession=encode_file_accession,
         bed_path=bed_file,
@@ -302,7 +350,8 @@ def build_validated_configuration(
             auth_status=auth_st,
             observation_status="SOURCE_NOT_VERIFIED",
             evidence_status=EvidenceInterpretation.SOURCE_NOT_VERIFIED,
-            exclusion_reason=contract_outcome.exclusion_reason
+            exclusion_reason=contract_outcome.exclusion_reason,
+            notes=[resolution_note] if resolution_note else []
         )
 
     file_sha256 = contract_outcome.actual_sha256
@@ -363,7 +412,8 @@ def build_validated_configuration(
             overlap_percentage=round(top_peak["overlap_percentage"], 2),
             observation_status="VERIFIED_POSITIVE_OBSERVATION",
             evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
-            exclusion_reason=None
+            exclusion_reason=None,
+            notes=[resolution_note] if resolution_note else []
         )
     else:
         # File scanned completely; no peak detected in promoter interval
@@ -402,7 +452,8 @@ def build_validated_configuration(
             overlap_percentage=0.0,
             observation_status="VERIFIED_NO_PEAK_DETECTED",
             evidence_status=EvidenceInterpretation.VERIFIED_NO_PEAK_DETECTED,
-            exclusion_reason=None
+            exclusion_reason=None,
+            notes=[resolution_note] if resolution_note else []
         )
 
 
