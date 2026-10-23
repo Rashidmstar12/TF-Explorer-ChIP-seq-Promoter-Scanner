@@ -1,102 +1,142 @@
-# 🧬 TF-Explorer v3.0 – Systems-Level Epigenetic Suite
+# TF-Explorer: Epigenetic Promoter Scanner & Regulatory Disagreement Engine
 
-A comprehensive Python suite and interactive **Streamlit Web Application** designed for high-resolution transcription factor (TF) ChIP-seq peak scanning, base-by-base evolutionary constraint profiling, and systems-level macromolecular interactome correlation for **ANY HUMAN GENE**.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Version 3.1.0rc1](https://img.shields.io/badge/version-3.1.0rc1-green.svg)](https://github.com/Rashidmstar12/TF-Explorer-ChIP-seq-Promoter-Scanner)
 
----
+**TF-Explorer** is an open-source computational genomics toolkit and interactive analysis suite designed to scan, cross-validate, and triage transcription factor (TF) binding evidence across human gene promoters.
 
-## 🚀 Key Upgrades & Features in v3.0
-
-### 1. Unified Multi-Track Promoter Track & Synergy Visualizer
-* **Evolutionary Overlay:** View base-by-base `phastCons` / `phyloP` conservation plots overlaying ChIP-seq peaks, motif predictions, and regulatory spans.
-* **Motif Synergy Scan:** Automatically highlights clusters where multiple different TFs bind in close proximity (within a 100 bp window) as shaded synergy hotspots.
-
-### 2. UCSC Evolutionary Conservation Profiling
-* **Constraint Metrics:** Computes average and maximum constraint values across the targeted promoter coordinates.
-* **High-Confidence Conserved Peaks:** Automatically extracts and tabulates peaks overlapping genomic regions with $phastCons > 0.8$.
-* **Nucleotide-Level Grid:** Explores base-by-base conservation values with full search, sorting, and CSV export.
-
-### 3. GTEx Baseline Cross-Tissue Expression Correlation
-* **TPM Expression Profiles:** Fetches and displays target gene and TF baseline mRNA expression levels across 54 non-diseased human tissues.
-* **Log-Scale Grouped Visuals:** Plots comparative bar charts side-by-side using log-scaling to compare high-expression target genes and low-expression TFs seamlessly.
-* **Subprocess Caching:** Leverages custom `st.session_state` caching for high-speed sub-millisecond tab switching.
-
-### 4. STRING Epigenetic Interactome Visualization
-* **Macromolecular Networks:** Renders a high-resolution macromolecular protein-protein network mapping physical and functional partners.
-* **Interactions Table:** Maps physical database, neighborhood, co-occurrence, and textmining confidence values in a searchable grid.
-
-### 5. Advanced Thermodynamics ChIP Primer Design
-* **Thermodynamic Safety Checks:** Calculates primer hairpins, homodimers, and heterodimers using `primer3-py` (`calcHairpin`, `calcHomodimer`, `calcHeterodimer`).
-* **Interactive Safety Badges:** Displays interactive color-coded status badges ("SAFE" vs "WARNING") for primer pairs.
+By integrating authoritative **ENCODE ChIP-seq** peak datasets, **JASPAR PSSM** motif scans, and **MANE Select v1.3** transcript annotations, TF-Explorer addresses the pervasive challenge of discordant regulatory evidence in genomic studies.
 
 ---
 
-## 💻 Installation & Setup
+## 🧬 Scientific Problem & The Disagreement Engine
 
-Install the required packages directly using pip:
+Genomic researchers frequently encounter conflicting regulatory evidence:
+- An ENCODE ChIP-seq peak is detected in a promoter, but no canonical motif sequence exists.
+- A high-scoring motif exists in the DNA sequence, but no ChIP-seq signal is observed.
+- Two studies report opposing binding results because they employed different promoter window definitions (e.g., -1000 bp vs. -2000 bp from TSS) or alternative transcript isoforms.
+
+TF-Explorer addresses this challenge with the **Regulatory Evidence Disagreement Engine**, which automates evidence triage and discordance classification across a **Seven-Category Regulatory Discordance Taxonomy**:
+
+1. **`DIRECT_COINCIDENT_OCCUPANCY`**: Coincident genomic evidence: coincident ChIP-seq peak and JASPAR motif observed.
+2. **`MOTIF_UNSUPPORTED_CHIP_PEAK`**: ChIP-seq peak observed without coincident canonical sequence motif (consistent with indirect tethering or co-factor recruitment).
+3. **`UNBOUND_CANONICAL_MOTIF`**: Canonical motif present without overlapping peak (consistent with closed chromatin, DNA methylation, or absence of TF expression).
+4. **`PROMOTER_WINDOW_DEPENDENT`**: Discrepancy caused solely by divergent promoter window arithmetic relative to the TSS.
+5. **`TRANSCRIPT_ISOFORM_SPECIFIC`**: Discrepancy arising from alternative transcription start sites (TSS) between transcript isoforms.
+6. **`CELL_TYPE_SPECIFIC_BINDING`**: Differential occupancy observed across distinct cellular contexts (e.g., K562 vs. HepG2).
+7. **`TECHNICAL_ARTIFACT_OR_QUALITY_DISCORDANCE`**: Discrepancy driven by sequencing depth, peak calling thresholds ($p$-value / $q$-value), or processing pipelines.
+
+---
+
+## 💻 Installation
+
+### Option 1: Install from Pre-Built Wheel (Recommended)
 
 ```bash
-pip install -r requirements.txt
+pip install tf_explorer-3.1.0rc1-py3-none-any.whl
+```
+
+### Option 2: Install from Source
+
+```bash
+git clone https://github.com/Rashidmstar12/TF-Explorer-ChIP-seq-Promoter-Scanner.git
+cd TF-Explorer-ChIP-seq-Promoter-Scanner
 pip install .
 ```
 
-### 🧬 Science Skills Prerequisite
-The GTEx, STRING, and UCSC Evolutionary databases leverage deep integration with locally pre-installed **Science Skills** under your agent's config folder. Make sure your shell has access to Python 3.12+ and `primer3-py`.
+For development and test dependencies:
+```bash
+pip install -e ".[dev,test]"
+```
 
 ---
 
-## 🏁 How to Run
+## 🚀 Quick Start
 
-### 🖥️ Streamlit Web Interface (Recommended)
-To run the full Systems-level Epigenetic Suite:
+### 1. Minimal Offline Demonstration (<0.1s Execution)
+
+Verify core coordinate and dispute triage logic immediately without internet access:
 
 ```bash
-py -m streamlit run tf_explorer/app.py
-```
-Or use the shortcut script:
-```cmd
-run_gui.bat
+python examples/quickstart_promoter.py
+python examples/quickstart_disagreement.py
 ```
 
-### ⌨️ Command Line Interface (CLI)
-For quick general peak-scanning:
+### 2. Command-Line Interface (CLI)
+
+Scan ENCODE ChIP-seq peaks and JASPAR motifs across any human gene promoter:
 
 ```bash
 tf-explorer \
-  --genome hg38 \
-  --gene PWWP2A \
-  --tf-list "E2F1,YY1,MYC" \
-  --jaspar-ids "MA0024.1,MA0095.1" \
+  --gene TP53 \
+  --tf-list "E2F1,CTCF" \
+  --jaspar-ids "MA0024.1,MA0139.1" \
   --promoter-up 2000 \
   --promoter-down 500 \
   --out results/
 ```
 
-### 🧪 Run the Verification Pipeline
-To test the systems database connectivity, Windows subprocess execution, and session-state caching:
+#### Key CLI Arguments:
+- `--gene`: Target gene symbol (e.g., `TP53`, `CDK4`, `GAPDH`).
+- `--tf-list`: Comma-separated list of transcription factors to scan.
+- `--jaspar-ids`: Comma-separated JASPAR matrix IDs for PWM scoring.
+- `--genome`: Reference genome assembly (default: `hg38` / `GRCh38`).
+- `--promoter-up`: Base pairs upstream of TSS (default: `2000`).
+- `--promoter-down`: Base pairs downstream of TSS (default: `500`).
+- `--threshold`: JASPAR PWM log-odds score threshold (default: `8.0`).
+- `--out`: Output directory for generated CSV tables and visualizations.
+
+### 3. Python API
+
+Programmatically classify regulatory discordance in custom analysis pipelines:
+
+```python
+from tf_explorer import calculate_promoter_coordinates, DisagreementEngine, EvidenceConfiguration, EvidenceInterpretation
+
+# 1. Expand strand-aware promoter boundaries
+start, end = calculate_promoter_coordinates(tss=7676594, strand="-", upstream=2000, downstream=500)
+print(f"TP53 promoter interval: chr17:{start}-{end}")
+
+# 2. Triage conflicting regulatory evidence configurations
+engine = DisagreementEngine()
+# evaluate_pair diagnoses causes across 7 discordance categories
+```
+
+### 4. Interactive Streamlit Web Interface
+
+Launch the full interactive visualization suite:
+
 ```bash
-py C:\Users\rashi\.gemini\antigravity\brain\5d40b0db-f7c1-4512-baf3-529cf5ec2848/scratch/verify_upgrades.py
+streamlit run tf_explorer/app.py
 ```
 
 ---
 
-## 🔬 CLI Arguments & Options
+## 🔬 Methodological Boundaries & Evidence Triage Caveats
 
-* `--gene`: Target gene symbol (e.g., `"TP53"`, `"GAPDH"`).
-* `--tf-list`: Comma-separated list of TFs to search in ENCODE (e.g., `"E2F1,YY1"`).
-* `--jaspar-ids`: Comma-separated list of JASPAR Matrix IDs for PWM scanning (e.g., `"MA0139.1"`).
-* `--genome`: Genome assembly (default: `"hg38"`).
-* `--promoter-up`: Base pairs upstream of Transcription Start Site (default: `2000`).
-* `--promoter-down`: Base pairs downstream of TSS (default: `500`).
-* `--threshold`: JASPAR PWM score threshold (default: `8.0`).
-* `--out`: Output directory.
+- **Evidence Triage, Not Physical Assay:** TF-Explorer is a computational evidence-triage and discordance classification tool. Inferred binding states and dispute taxonomy diagnoses represent computational hypotheses based on public genomic data and user-specified geometric criteria, not direct physical verification of in vivo binding. Empirical experimental validation (e.g., EMSA, CUT&RUN, or functional reporter assays) remains essential.
+- **Reference Genome:** GRCh38 / hg38. All coordinate calculations enforce 0-based half-open interval conventions $[start, end)$.
+- **Strand Geometry:** On the negative strand ($-$), promoter windows expand to numerically higher coordinates $[TSS - down, TSS + up]$ ensuring $start < end$ globally.
+- **Transcript Canonical Authority:** Transcript TSS coordinates are verified against MANE Select v1.3 (Ensembl / NCBI consensus).
+- **Public REST Clients:** External queries (ENCODE, Ensembl, UCSC, GTEx, STRING) use standard pure-Python HTTP clients with enforced timeouts and retry backoffs. No private shell tools or local agent skills are required.
 
 ---
 
-## 📂 Output File Structure
+## 🧪 Running the Test Suite
 
-Upon running an analysis, the suite generates:
-* `[GENE]_encode_hits.csv`: ENCODE ChIP-seq peaks overlapping the promoter coordinates.
-* `[GENE]_motif_predictions.csv`: JASPAR predicted binding motifs inside the region.
-* `[GENE]_conservation.csv`: Base-by-base phyloP/phastCons UCSC constraint values.
-* `[GENE]_synergy_hotspots.csv`: Transcription factor binding sites overlapping within 100 bp.
-* `[GENE]_tcga_summary.csv`: Patient correlation scores across selected cancers.
+Execute the automated test suite with pytest:
+
+```bash
+pytest tests/ -v
+```
+
+---
+
+## 📄 License & Governance
+
+TF-Explorer is licensed under the **OSI-Approved MIT License**. See [LICENSE](LICENSE) for details.
+
+Contributions are welcome! Please review our [Contributing Guidelines](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
+
+For inquiries or bug reports, open an issue on GitHub or contact `rashidmstar@pondiuni.ac.in`.

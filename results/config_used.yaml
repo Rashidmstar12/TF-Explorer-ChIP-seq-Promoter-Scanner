@@ -1,0 +1,9 @@
+gene_name: NONEXISTENT_XYZ_123
+genome: hg38
+loose_promoter_down: 5000
+loose_promoter_up: 5000
+promoter_down: 500
+promoter_up: 2000
+pwm_threshold: 8.0
+tf_list: []
+timestamp: '2026-10-23T17:53:17.917242'

@@ -1,4 +1,5 @@
 import os
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -6,7 +7,7 @@ import logging
 import yaml
 import time
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Tuple, Optional, Any
 import random
 
 from . import encode_client, genome_client, motifs
@@ -31,55 +32,113 @@ def save_config(output_dir: str, config: Dict):
     with open(os.path.join(output_dir, "config_used.yaml"), "w") as f:
         yaml.dump(config, f)
 
-def get_ucsc_conservation(chrom: str, start: int, end: int, genome: str = "hg38") -> dict:
+from .external_apis import get_ucsc_conservation
+
+def calculate_promoter_coordinates(tss: int, strand: str, upstream: int = 2000, downstream: int = 500) -> Tuple[int, int]:
     """
-    Invokes the UCSC conservation skill script to fetch phyloP and phastCons scores.
+    Calculate strand-aware promoter genomic coordinates [start, end).
+    - Positive strand (+): [tss - upstream, tss + downstream)
+    - Negative strand (-): [tss - downstream, tss + upstream)
+    Ensures start < end on the genomic coordinate axis.
     """
-    import subprocess
-    import tempfile
-    import json
-    
-    # Dynamically locate the skill directory using os.path.expanduser("~")
-    home = os.path.expanduser("~")
-    script_path = os.path.join(
-        home, 
-        ".gemini", "config", "plugins", "science", "skills", 
-        "ucsc_conservation_and_tfbs", "scripts", "get_conservation.py"
-    )
-    
-    if not os.path.exists(script_path):
-        logger.warning(f"UCSC conservation script not found at {script_path}. Skipping conservation.")
-        return {}
-        
-    temp_dir = tempfile.gettempdir()
-    out_file = os.path.join(temp_dir, f"cons_{chrom}_{start}_{end}.json")
-    
-    coord_str = f"{chrom}:{start}-{end}"
-    cmd = [
-        "uv", "run", script_path,
-        "--coordinates", coord_str,
-        "--output", out_file,
-        "--genome", genome
-    ]
-    
+    if strand == "+":
+        return tss - upstream, tss + downstream
+    else:
+        return tss - downstream, tss + upstream
+
+def get_default_cache_dir() -> str:
+    """
+    Returns a standard, cross-platform cache directory for TF-Explorer data.
+    Uses platformdirs to adhere to OS-specific conventions:
+    - Linux: ~/.cache/tf_explorer
+    - macOS: ~/Library/Caches/tf_explorer
+    - Windows: %LOCALAPPDATA%/tf_explorer/Cache
+    Falls back to a local '.tf_explorer_cache' folder if permissions issues arise.
+    """
     try:
-        logger.info(f"Running UCSC conservation fetch command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        if os.path.exists(out_file):
-            with open(out_file, "r") as f:
-                data = json.load(f)
-            try:
-                os.remove(out_file)
-            except OSError:
-                pass
-            return data
+        import platformdirs
+        cache_dir = platformdirs.user_cache_dir("tf_explorer")
+        os.makedirs(cache_dir, exist_ok=True)
+        return cache_dir
     except Exception as e:
-        logger.error(f"Failed to fetch UCSC conservation data: {e}")
+        logger.warning(f"Failed to initialize user cache dir via platformdirs: {e}. Falling back to local cache.")
+        local_cache = os.path.join(os.getcwd(), ".tf_explorer_cache")
+        os.makedirs(local_cache, exist_ok=True)
+        return local_cache
+
+def summarize_experiments(df_stats: pd.DataFrame):
+    """
+    Standardizes experiment metrics calculation decoupled from UI.
+    Input: df_stats (raw DataFrame from experiment_stats.csv or analysis pipeline)
+    Returns: (n_strict, n_loose, total_strict_peaks, total_loose_peaks, total_experiments, processed_df)
+    """
+    col_map = {
+        'num_strict_peaks': 'num_overlapping_peaks_strict',
+        'num_loose_peaks': 'num_overlapping_peaks_loose',
+        'total_peaks_in_file': 'total_peaks'
+    }
+    df = df_stats.rename(columns=col_map)
+    
+    for col in ['num_overlapping_peaks_strict', 'num_overlapping_peaks_loose']:
+        if col not in df.columns:
+            df[col] = 0
+            
+    n_strict = int((df['num_overlapping_peaks_strict'] > 0).sum())
+    n_loose = int((df['num_overlapping_peaks_loose'] > 0).sum())
+            
+    total_strict_peaks = int(df['num_overlapping_peaks_strict'].sum())
+    total_loose_peaks = int(df['num_overlapping_peaks_loose'].sum())
+    total_experiments = len(df)
+    
+    return n_strict, n_loose, total_strict_peaks, total_loose_peaks, total_experiments, df
+
+def plot_cell_line_comparison(summary_df: pd.DataFrame):
+    """
+    Generates a bar chart comparing binding frequencies across cell lines.
+    Deduplicates technical replicate files by experiment accession to prevent
+    pseudoreplication skew (DEF-015).
+    """
+    if summary_df.empty or 'biosample' not in summary_df.columns:
+        return None
         
-    return {}
+    col = 'num_overlapping_peaks_strict' if 'num_overlapping_peaks_strict' in summary_df.columns else 'num_strict_peaks'
+    if col not in summary_df.columns:
+        return None
+        
+    # Check if experiment_id is available for deduplication
+    has_experiment = 'experiment_id' in summary_df.columns
+    
+    if has_experiment:
+        # Group by biosample and experiment_id first to get peak presence per experiment
+        exp_level = summary_df.groupby(['biosample', 'experiment_id'])[col].max().reset_index()
+        stats = exp_level.groupby('biosample').agg(
+            total_units=('experiment_id', 'nunique'),
+            units_with_peaks=(col, lambda x: (x > 0).sum())
+        ).reset_index()
+        metric_label = "Occupancy Rate (% of Experiments)"
+    else:
+        stats = summary_df.groupby('biosample').agg(
+            total_units=('file_accession', 'count') if 'file_accession' in summary_df.columns else ('biosample', 'count'),
+            units_with_peaks=(col, lambda x: (x > 0).sum())
+        ).reset_index()
+        metric_label = "Binding Rate (% of Files)"
+    
+    stats['binding_rate'] = (stats['units_with_peaks'] / stats['total_units']) * 100
+    stats = stats.sort_values('binding_rate', ascending=False)
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sns.barplot(data=stats, x='biosample', y='binding_rate', hue='biosample', legend=False, ax=ax, palette='viridis')
+    
+    ax.set_title(f"TF Binding Rate by Cell Line (Strict Window) - {metric_label}", fontsize=13)
+    ax.set_ylabel(metric_label, fontsize=12)
+    ax.set_xlabel("Cell Line", fontsize=12)
+    plt.tight_layout()
+    
+    return fig
 
 def scan_motif_synergy(df_motifs, max_distance=100) -> pd.DataFrame:
     """
+
     Scans predicted motifs to find clusters of different TFs within max_distance bp of each other.
     """
     if df_motifs.empty or len(df_motifs) < 2:
@@ -124,6 +183,32 @@ def scan_motif_synergy(df_motifs, max_distance=100) -> pd.DataFrame:
             
     return pd.DataFrame(synergy_regions)
 
+def validate_gene_symbol(gene_name: str) -> str:
+    """
+    Validates gene symbol to prevent path traversal, injection, or malformed inputs.
+    """
+    if not isinstance(gene_name, str) or not gene_name.strip():
+        raise ValueError("Gene symbol must be a non-empty string.")
+    cleaned = gene_name.strip()
+    forbidden = ["/", "\\", "..", "\0", "\n", "\r", ";", "&", "|", "`", "$"]
+    if any(ch in cleaned for ch in forbidden):
+        raise ValueError(f"Invalid gene symbol '{cleaned}': contains forbidden characters.")
+    return cleaned
+
+def validate_genome_assembly(genome: str) -> str:
+    """
+    Validates and standardizes genome assembly identifier.
+    Supported: hg38, GRCh38, hg19, GRCh37.
+    """
+    if not isinstance(genome, str) or not genome.strip():
+        return "hg38"
+    cleaned = genome.strip().lower()
+    if cleaned in ("hg38", "grch38"):
+        return "hg38"
+    if cleaned in ("hg19", "grch37"):
+        return "hg19"
+    raise ValueError(f"Unsupported genome assembly '{genome}'. Supported: hg38, hg19 (GRCh38, GRCh37).")
+
 def analyze_gene(
     gene_name: str,
     tf_list: List[str],
@@ -148,6 +233,9 @@ def analyze_gene(
     """
     Main analysis pipeline.
     """
+    gene_name = validate_gene_symbol(gene_name)
+    genome = validate_genome_assembly(genome)
+
     os.makedirs(output_dir, exist_ok=True)
     setup_logging(output_dir)
     
@@ -156,6 +244,7 @@ def analyze_gene(
         "gene_name": gene_name,
         "tf_list": tf_list,
         "genome": genome,
+
         "promoter_up": promoter_up,
         "promoter_down": promoter_down,
         "loose_promoter_up": loose_promoter_up,
@@ -202,6 +291,7 @@ def analyze_gene(
         
     # 3. ENCODE Search & Overlap
     encode_hits = []
+    nearest_nonoverlapping_peaks = []
     
     # Define promoter genomic region for overlap check
     if strand == "+":
@@ -226,18 +316,18 @@ def analyze_gene(
         logger.info(f"Using {len(all_experiments)} provided experiments.")
     else:
         for tf in tf_list:
-            exps = encode_client.search_encode_tf_chipseq(tf, "Homo sapiens")
+            exps = encode_client.search_encode_tf_chipseq(tf, "Homo sapiens", assembly=genome)
             for exp in exps:
                 exp['tf_name'] = tf # Keep track of TF name
                 all_experiments.append(exp)
     total_files = len(all_experiments)
     logger.info(f"Found total {total_files} peak files to process.")
     
-    # Use cache_dir if provided, else use temp_downloads inside output_dir
+    # Use cache_dir if provided, else use system default cache directory
     if cache_dir:
         download_dir = cache_dir
     else:
-        download_dir = os.path.join(output_dir, "temp_downloads")
+        download_dir = get_default_cache_dir()
     
     os.makedirs(download_dir, exist_ok=True)
     errors = []
@@ -292,7 +382,7 @@ def analyze_gene(
             if hits_strict:
                 encode_hits.extend(hits_strict)
             elif closest:
-                encode_hits.append(closest)
+                nearest_nonoverlapping_peaks.append(closest)
                 
             # Collect stats
             experiment_stats.append({
@@ -313,14 +403,22 @@ def analyze_gene(
     if progress_callback:
         progress_callback(total_files, total_files, "Processing complete.")
                 
-    # Save ENCODE hits
+    # Save ENCODE hits (strict overlapping peaks only)
     if not encode_hits:
-        logger.info("No ENCODE hits found. Creating empty DataFrame with columns.")
-        df_encode = pd.DataFrame(columns=["tf", "experiment", "biosample", "file", "peak_chrom", "peak_start", "peak_end", "distance_to_tss", "overlap"])
+        logger.info("No ENCODE strict hits found. Creating empty DataFrame with columns.")
+        df_encode = pd.DataFrame(columns=["tf", "experiment", "biosample", "file", "peak_chrom", "peak_start", "peak_end", "distance_to_tss", "score", "signal", "overlap"])
     else:
         df_encode = pd.DataFrame(encode_hits)
-    logger.info(f"Writing ENCODE hits to {os.path.join(output_dir, f'{gene_name}_encode_hits.csv')}")
+    logger.info(f"Writing ENCODE strict hits to {os.path.join(output_dir, f'{gene_name}_encode_hits.csv')}")
     df_encode.to_csv(os.path.join(output_dir, f"{gene_name}_encode_hits.csv"), index=False)
+    
+    # Save nearest non-overlapping peaks separately
+    if not nearest_nonoverlapping_peaks:
+        df_nearest = pd.DataFrame(columns=["tf", "experiment", "biosample", "file", "peak_chrom", "peak_start", "peak_end", "distance_to_tss", "score", "signal", "overlap"])
+    else:
+        df_nearest = pd.DataFrame(nearest_nonoverlapping_peaks)
+    logger.info(f"Writing nearest non-overlapping peaks to {os.path.join(output_dir, f'{gene_name}_nearest_nonoverlapping_peaks.csv')}")
+    df_nearest.to_csv(os.path.join(output_dir, f"{gene_name}_nearest_nonoverlapping_peaks.csv"), index=False)
     
     # Save Detailed Stats
     df_stats = pd.DataFrame(experiment_stats)
@@ -345,23 +443,24 @@ def analyze_gene(
         logger.warning(f"Error fetching conservation data: {e}")
         
     # Process base-by-base conservation data
+    # Missing data is represented as np.nan to distinguish from true 0.0 scores or fast evolution (negative phyloP)
     base_data = {}
     for pos in range(promoter_genomic_start, promoter_genomic_end + 1):
-        base_data[pos] = {"phyloP": 0.0, "phastCons": 0.0}
+        base_data[pos] = {"phyloP": np.nan, "phastCons": np.nan}
         
     phylo_list = conservation_data.get("phyloP100way", []) if conservation_data else []
     for entry in phylo_list:
         start_pos = entry.get("start")
         val = entry.get("value")
         if start_pos in base_data and val is not None:
-            base_data[start_pos]["phyloP"] = val
+            base_data[start_pos]["phyloP"] = float(val)
             
     phast_list = conservation_data.get("phastCons100way", []) if conservation_data else []
     for entry in phast_list:
         start_pos = entry.get("start")
         val = entry.get("value")
         if start_pos in base_data and val is not None:
-            base_data[start_pos]["phastCons"] = val
+            base_data[start_pos]["phastCons"] = float(val)
             
     rows = []
     for pos, vals in base_data.items():
@@ -383,17 +482,24 @@ def analyze_gene(
             try:
                 p_start = int(row["peak_start"])
                 p_end = int(row["peak_end"])
-                peak_scores = df_cons[(df_cons["genomic_pos"] >= p_start) & (df_cons["genomic_pos"] <= p_end)]["phastCons"]
-                max_c = peak_scores.max() if not peak_scores.empty else 0.0
+                peak_scores = df_cons[(df_cons["genomic_pos"] >= p_start) & (df_cons["genomic_pos"] <= p_end)]["phastCons"].dropna()
+                if not peak_scores.empty:
+                    max_c = float(peak_scores.max())
+                    is_high_conf = bool(max_c > 0.8)
+                else:
+                    max_c = np.nan
+                    is_high_conf = False
                 max_cons_list.append(max_c)
-                high_conf_list.append(max_c > 0.8)
+                high_conf_list.append(is_high_conf)
             except Exception:
-                max_cons_list.append(0.0)
+                max_cons_list.append(np.nan)
                 high_conf_list.append(False)
         df_encode["max_conservation"] = max_cons_list
+        df_encode["peak_overlaps_highly_conserved_sequence"] = high_conf_list
         df_encode["high_confidence_site"] = high_conf_list
     else:
-        df_encode["max_conservation"] = 0.0
+        df_encode["max_conservation"] = np.nan
+        df_encode["peak_overlaps_highly_conserved_sequence"] = False
         df_encode["high_confidence_site"] = False
         
     df_encode.to_csv(os.path.join(output_dir, f"{gene_name}_encode_hits.csv"), index=False)
@@ -430,7 +536,7 @@ def analyze_gene(
         
     # 7. BED Output
     if bed_output:
-        generate_bed_output(df_encode, df_motifs, chrom, promoter_genomic_start, gene_name, output_dir)
+        generate_bed_output(df_encode, df_motifs, chrom, promoter_genomic_start, gene_name, output_dir, strand=strand, promoter_end=promoter_genomic_end)
 
     logger.info("Analysis complete.")
     return summary_df
@@ -598,7 +704,7 @@ def plot_promoter_track(df_encode, df_motifs, promoter_up, promoter_down, gene_n
     fig.savefig(os.path.join(output_dir, f"{gene_name}_track_plot.png"))
     plt.close(fig)
 
-def generate_bed_output(df_encode, df_motifs, chrom, promoter_start, gene_name, output_dir):
+def generate_bed_output(df_encode, df_motifs, chrom, promoter_start, gene_name, output_dir, strand="+", promoter_end=None):
     """Generates a BED file of all binding sites."""
     bed_path = os.path.join(output_dir, f"{gene_name}_overlaps.bed")
     
@@ -625,14 +731,32 @@ def generate_bed_output(df_encode, df_motifs, chrom, promoter_start, gene_name, 
         # Motif Predictions
         if not df_motifs.empty:
             for _, row in df_motifs.iterrows():
-                color = "0,0,255" # Blue for motifs
+                color = "0,0,255"  # Blue for motifs
                 name = f"{row['tf_name']}_{row['jaspar_id']}"
                 try:
-                    # Motifs are relative to promoter start? No, they should be genomic if possible.
-                    # We need to convert to genomic.
-                    pass 
+                    if strand == "-" and promoter_end is not None:
+                        # For negative-strand genes, offset 0 is promoter_end (5' end of transcript)
+                        m_start = int(promoter_end) - int(row['end'])
+                        m_end = int(promoter_end) - int(row['start'])
+                        # A motif on transcript's '+' strand maps to genomic '-' strand
+                        m_strand = '-' if str(row.get('strand', '+')) == '+' else '+'
+                    else:
+                        m_start = int(promoter_start) + int(row['start'])
+                        m_end = int(promoter_start) + int(row['end'])
+                        m_strand = str(row.get('strand', '+'))
+                    score_val = float(row.get('score', 0.0))
+                    bed_score = max(0, min(1000, int(score_val * 10)))
+                    clean_chr = str(chrom).replace('chr', '')
+                    f.write(f"chr{clean_chr}\t{m_start}\t{m_end}\t{name}\t{bed_score}\t{m_strand}\t{m_start}\t{m_end}\t{color}\n")
                 except Exception:
                     continue
+
+def calculate_distance_to_tss(peak_center: int, tss: int, strand: str) -> int:
+    """Calculates signed distance from peak center to TSS (upstream is negative)."""
+    dist = peak_center - tss
+    if strand == "-":
+        dist = -dist
+    return dist
 
 def find_overlaps_for_experiment(file_path, chrom, p_start_strict, p_end_strict, p_start_loose, p_end_loose, tss, strand, exp, tf):
     """
@@ -686,9 +810,7 @@ def find_overlaps_for_experiment(file_path, chrom, p_start_strict, p_end_strict,
             
             # Calculate signed distance from peak center to TSS
             peak_center = (peak_start + peak_end) // 2
-            dist_to_tss = peak_center - tss
-            if strand == "-":
-                dist_to_tss = -dist_to_tss
+            dist_to_tss = calculate_distance_to_tss(peak_center, tss, strand)
             
             abs_dist = abs(dist_to_tss)
 

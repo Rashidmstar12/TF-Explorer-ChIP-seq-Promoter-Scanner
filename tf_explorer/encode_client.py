@@ -14,11 +14,21 @@ TF_ALIASES = {
     "C-MYC": "MYC"
 }
 
-def search_encode(target_name: str, assay_type: str = "TF ChIP-seq", organism: str = "Homo sapiens") -> List[Dict]:
+def search_encode(target_name: str, assay_type: str = "TF ChIP-seq", organism: str = "Homo sapiens", assembly: str = "GRCh38") -> List[Dict]:
     """
     General ENCODE search supporting TF ChIP-seq, Histone ChIP-seq, and DNase-seq.
+    Supports genome assemblies such as GRCh38/hg38 and GRCh37/hg19.
     """
-    logger.info(f"Searching ENCODE for {target_name} ({assay_type}, {organism})...")
+    logger.info(f"Searching ENCODE for {target_name} ({assay_type}, {organism}, assembly={assembly})...")
+    
+    # Normalize requested assembly
+    norm_assembly = assembly.lower()
+    if norm_assembly in ("hg38", "grch38"):
+        target_assemblies = {"GRCh38", "hg38"}
+    elif norm_assembly in ("hg19", "grch37"):
+        target_assemblies = {"hg19", "GRCh37"}
+    else:
+        target_assemblies = {assembly}
     
     # 1. Base parameters
     params = {
@@ -43,7 +53,7 @@ def search_encode(target_name: str, assay_type: str = "TF ChIP-seq", organism: s
     headers = {"Accept": "application/json"}
     
     try:
-        response = requests.get(f"{ENCODE_BASE_URL}/search/", params=params, headers=headers)
+        response = requests.get(f"{ENCODE_BASE_URL}/search/", params=params, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json()
         
@@ -88,20 +98,20 @@ def search_encode(target_name: str, assay_type: str = "TF ChIP-seq", organism: s
                 output_type = f.get("output_type", "")
                 file_format = f.get("file_format", "")
                 file_format_type = f.get("file_format_type", "")
-                assembly = f.get("assembly", "")
+                f_assembly = f.get("assembly", "")
                 status = f.get("status", "")
                 
                 if (output_type in valid_output_types and
                     file_format == "bed" and
                     file_format_type in valid_file_format_types and
-                    assembly == "GRCh38" and
+                    f_assembly in target_assemblies and
                     status == "released"):
                     
                     results.append({
                         "file_accession": f.get("accession"),
                         "download_url": f"{ENCODE_BASE_URL}{f.get('href')}",
                         "dataset_accession": exp.get("accession"),
-                        "assembly": assembly,
+                        "assembly": f_assembly,
                         "biosample": biosample,
                         "description": exp.get("description", "No description")
                     })
@@ -113,9 +123,10 @@ def search_encode(target_name: str, assay_type: str = "TF ChIP-seq", organism: s
         logger.error(f"Error querying ENCODE: {e}")
         return []
 
-def search_encode_tf_chipseq(tf_name: str, organism: str = "Homo sapiens") -> List[Dict]:
+def search_encode_tf_chipseq(tf_name: str, organism: str = "Homo sapiens", assembly: str = "GRCh38") -> List[Dict]:
     """Backward-compatible wrapper for TF ChIP-seq."""
-    return search_encode(tf_name, "TF ChIP-seq", organism)
+    return search_encode(tf_name, "TF ChIP-seq", organism, assembly=assembly)
+
 
 def download_peak_file(url: str, local_path: str) -> Optional[str]:
     """

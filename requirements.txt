@@ -1,9 +1,0 @@
-requests
-pandas
-biopython
-matplotlib
-seaborn
-mygene
-pyyaml
-streamlit
-primer3-py
