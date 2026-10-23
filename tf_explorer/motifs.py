@@ -8,7 +8,9 @@ from io import StringIO
 # Configure logging
 logger = logging.getLogger(__name__)
 
-JASPAR_API_URL = "https://jaspar.genereg.net/api/v1/matrix"
+JASPAR_API_URL = "https://jaspar.elixir.no/api/v1/matrix"
+JASPAR_FALLBACK_URL = "https://jaspar.genereg.net/api/v1/matrix"
+JASPAR_CACHE_DIR = "jaspar_cache"
 
 # Common TFs to JASPAR IDs mapping (for convenience/defaults)
 COMMON_TFS = {
@@ -24,23 +26,47 @@ COMMON_TFS = {
 
 def get_jaspar_matrix(matrix_id: str):
     """
-    Fetches a PFM from JASPAR API and returns a Bio.motifs object.
+    Fetches a PFM from JASPAR API (with local file caching) and returns a Bio.motifs object.
     """
     logger.info(f"Fetching JASPAR matrix {matrix_id}...")
-    try:
-        # Fetch PFM format
-        url = f"{JASPAR_API_URL}/{matrix_id}.pfm"
-        response = requests.get(url)
-        response.raise_for_status()
-        
-        # Parse with Bio.motifs
-        # Bio.motifs.read expects a handle
-        handle = StringIO(response.text)
-        m = motifs.read(handle, "jaspar")
-        return m
-    except Exception as e:
-        logger.error(f"Failed to fetch/parse matrix {matrix_id}: {e}")
-        return None
+    import os
+    os.makedirs(JASPAR_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(JASPAR_CACHE_DIR, f"{matrix_id}.pfm")
+
+    # 1. Check local cache
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                handle = StringIO(content)
+                m = motifs.read(handle, "jaspar")
+                if m is not None and m.length > 0:
+                    return m
+        except Exception as e_cache:
+            logger.warning(f"Purging corrupted cached matrix {matrix_id}: {e_cache}")
+            try:
+                os.remove(cache_path)
+            except OSError:
+                pass
+
+    # 2. Fetch from active API
+    for api_base in [JASPAR_API_URL, JASPAR_FALLBACK_URL]:
+        try:
+            url = f"{api_base}/{matrix_id}.pfm"
+            response = requests.get(url, timeout=10)
+            if response.ok and response.text.strip().startswith(">"):
+                handle = StringIO(response.text)
+                m = motifs.read(handle, "jaspar")
+                if m is not None and m.length > 0:
+                    # Validated; save to cache atomically
+                    with open(cache_path, "w", encoding="utf-8") as f:
+                        f.write(response.text)
+                    return m
+        except Exception as e:
+            logger.warning(f"Failed fetching/parsing {matrix_id} from {api_base}: {e}")
+
+    logger.error(f"Failed to fetch/parse matrix {matrix_id} from all sources.")
+    return None
 
 def scan_promoter_with_jaspar(promoter_seq: str, jaspar_ids: List[str], threshold: float = 8.0) -> List[Dict]:
     """
@@ -55,7 +81,8 @@ def scan_promoter_with_jaspar(promoter_seq: str, jaspar_ids: List[str], threshol
     logger.info(f"Scanning promoter ({len(promoter_seq)} bp) with {len(jaspar_ids)} matrices...")
     
     hits = []
-    seq_obj = Seq(promoter_seq)
+    seq_obj = Seq(promoter_seq.upper())
+    seq_len = len(promoter_seq)
     
     for mid in jaspar_ids:
         m = get_jaspar_matrix(mid)
@@ -65,44 +92,34 @@ def scan_promoter_with_jaspar(promoter_seq: str, jaspar_ids: List[str], threshol
         # Convert to PWM (PSSM in Biopython terms)
         # Add pseudocounts to avoid log(0)
         pwm = m.counts.normalize(pseudocounts=0.5).log_odds()
+        motif_len = len(m)
         
-        # Search
-        # pssm.search returns (position, score) tuples
-        # It searches both strands by default? No, usually just forward.
-        # We should check both strands or just the provided one.
-        # Promoter analysis usually considers both strands as TFs can bind either way.
-        
-        # Search forward
+        # Biopython pssm.search evaluates both strands natively when both=True (default).
+        # Positive positions (pos >= 0) indicate forward strand matches at [pos, pos + motif_len).
+        # Negative positions (pos < 0) indicate reverse strand matches where pos = neg_pos - seq_len.
+        # The 0-based sequence offset for reverse strand matches is therefore: seq_len + pos.
         for pos, score in pwm.search(seq_obj, threshold=threshold):
-            hits.append({
-                "tf_name": m.name,
-                "jaspar_id": mid,
-                "strand": "+",
-                "start": pos,
-                "end": pos + len(m),
-                "score": score,
-                "sequence": str(seq_obj[pos:pos+len(m)])
-            })
-            
-        # Search reverse
-        rc_seq = seq_obj.reverse_complement()
-        for pos, score in pwm.search(rc_seq, threshold=threshold):
-            # Position on RC needs to be mapped back to forward if we want genomic coords relative to TSS?
-            # Or just report it as relative to 5' of the provided sequence.
-            # Let's report relative to the start of the provided sequence.
-            # If match is at pos on RC, it means it's at len(seq) - pos - len(m) on forward.
-            
-            fwd_start = len(promoter_seq) - pos - len(m)
-            fwd_end = len(promoter_seq) - pos
-            
-            hits.append({
-                "tf_name": m.name,
-                "jaspar_id": mid,
-                "strand": "-",
-                "start": fwd_start,
-                "end": fwd_end,
-                "score": score,
-                "sequence": str(rc_seq[pos:pos+len(m)]) # This is the sequence on the - strand
-            })
-            
+            if pos >= 0:
+                start = int(pos)
+                end = start + motif_len
+                strand = "+"
+                hit_seq = str(seq_obj[start:end])
+            else:
+                start = int(seq_len + pos)
+                end = start + motif_len
+                strand = "-"
+                hit_seq = str(seq_obj[start:end].reverse_complement())
+                
+            if 0 <= start <= end <= seq_len:
+                hits.append({
+                    "tf_name": getattr(m, "name", mid) or mid,
+                    "jaspar_id": mid,
+                    "strand": strand,
+                    "start": start,
+                    "end": end,
+                    "score": float(score),
+                    "sequence": hit_seq
+                })
+                
+    hits.sort(key=lambda x: (x["start"], x["end"], x["strand"]))
     return hits

@@ -1,12 +1,51 @@
 import requests
 import mygene
 import logging
-from typing import Tuple, Optional
+import time
+from typing import Tuple, Optional, List, Dict
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 ENSEMBL_REST_URL = "https://rest.ensembl.org"
+DEFAULT_TIMEOUT = 10
+
+class EnsemblRateLimitError(Exception):
+    """Raised when Ensembl returns HTTP 429 rate limit."""
+    pass
+
+class EnsemblServerError(Exception):
+    """Raised when Ensembl returns 5xx server error."""
+    pass
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type((
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        EnsemblRateLimitError,
+        EnsemblServerError
+    ))
+)
+def _ensembl_get(url: str, headers: dict, timeout: int = DEFAULT_TIMEOUT) -> requests.Response:
+    """Performs HTTP GET with User-Agent and automatic retries for rate-limits and server errors."""
+    req_headers = dict(headers)
+    req_headers.setdefault("User-Agent", "TF-Explorer/3.0.0 (Research Software; Ensembl-REST)")
+    resp = requests.get(url, headers=req_headers, timeout=timeout)
+    if resp.status_code == 429:
+        retry_after = resp.headers.get("Retry-After")
+        if retry_after:
+            try:
+                time.sleep(float(retry_after))
+            except ValueError:
+                time.sleep(1.0)
+        raise EnsemblRateLimitError(f"Ensembl API HTTP 429 rate limit exceeded for {url}")
+    if resp.status_code >= 500:
+        raise EnsemblServerError(f"Ensembl API server error {resp.status_code} for {url}")
+    return resp
 
 def get_gene_coordinates(gene_name: str, genome: str = "hg38") -> Optional[Tuple[str, int, int, str]]:
     """
@@ -121,35 +160,61 @@ def get_promoter_sequence(chrom: str, tss: int, strand: str, up_bp: int, down_bp
     headers = {"Content-Type": "text/plain"}
     
     try:
-        r = requests.get(ENSEMBL_REST_URL + ext, headers=headers)
+        r = _ensembl_get(ENSEMBL_REST_URL + ext, headers=headers)
         
         if not r.ok:
-            logger.error(f"Ensembl API failed: {r.text}")
-            r.raise_for_status()
+            logger.error(f"Ensembl API failed with status {r.status_code}: {r.text}")
+            return None
             
         return r.text
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching sequence: {e}")
+    except Exception as e:
+        logger.error(f"Error fetching sequence via Ensembl REST API: {e}")
         return None
 
-from typing import List, Dict
-
-def get_gene_transcripts(gene_name: str) -> List[Dict]:
+def get_gene_transcripts(gene_name: str, genome: str = "hg38") -> List[Dict]:
     """
     Fetches all transcripts for a given gene symbol from Ensembl.
-    Returns a list of dictionaries containing transcript details.
+    Returns a list of dictionaries containing transcript details, sorted canonical first.
     """
-    logger.info(f"Fetching transcripts for {gene_name}...")
+    logger.info(f"Fetching transcripts for {gene_name} ({genome})...")
     
-    # Use Ensembl lookup endpoint
-    ext = f"/lookup/symbol/homo_sapiens/{gene_name}?expand=1"
     headers = {"Content-Type": "application/json"}
+    ext = f"/lookup/symbol/homo_sapiens/{gene_name}?expand=1"
     
     try:
-        r = requests.get(ENSEMBL_REST_URL + ext, headers=headers)
-        
-        if not r.ok:
-            logger.error(f"Ensembl API failed: {r.text}")
+        r = None
+        # First attempt: direct symbol lookup
+        try:
+            r = _ensembl_get(ENSEMBL_REST_URL + ext, headers=headers)
+        except Exception as e_sym:
+            logger.warning(f"Symbol lookup for {gene_name} encountered error: {e_sym}")
+
+        # If symbol lookup was unsuccessful or errored, try resolving Ensembl Gene ID via MyGene
+        if r is None or not r.ok:
+            try:
+                mg = mygene.MyGeneInfo()
+                mg_res = mg.query(gene_name, scopes="symbol", species="human", fields="ensembl.gene")
+                if mg_res and mg_res.get('hits'):
+                    for h in mg_res['hits']:
+                        ens = h.get('ensembl')
+                        ens_id = None
+                        if isinstance(ens, dict) and 'gene' in ens:
+                            ens_id = ens['gene']
+                        elif isinstance(ens, list) and len(ens) > 0 and 'gene' in ens[0]:
+                            ens_id = ens[0]['gene']
+                        if ens_id:
+                            logger.info(f"Resolved {gene_name} to Ensembl gene ID {ens_id}. Attempting ID lookup...")
+                            r_id = _ensembl_get(f"{ENSEMBL_REST_URL}/lookup/id/{ens_id}?expand=1", headers=headers)
+                            if r_id.ok:
+                                r = r_id
+                                break
+            except Exception as e_mg:
+                logger.warning(f"Ensembl ID fallback query failed: {e_mg}")
+
+        if r is None or not r.ok:
+            status = r.status_code if r is not None else "NoResponse"
+            text = r.text if r is not None else ""
+            logger.error(f"Ensembl API failed with status {status}: {text}")
             return []
             
         data = r.json()
@@ -162,16 +227,17 @@ def get_gene_transcripts(gene_name: str) -> List[Dict]:
         gene_strand = data.get('strand', 1)
         
         for t in data['Transcript']:
+            t_strand = t.get('strand', gene_strand)
+            t_start = t['start']
+            t_end = t['end']
+            
             # Determine TSS based on strand
-            # Ensembl returns start/end. 
             # If strand is 1 (+), TSS is start.
             # If strand is -1 (-), TSS is end.
-            t_strand = t.get('strand', gene_strand)
-            
             if t_strand == 1:
-                tss = t['start']
+                tss = t_start
             else:
-                tss = t['end']
+                tss = t_end
                 
             transcripts.append({
                 'id': t['id'],
@@ -180,15 +246,16 @@ def get_gene_transcripts(gene_name: str) -> List[Dict]:
                 'is_canonical': t.get('is_canonical', 0) == 1,
                 'tss': tss,
                 'strand': "+" if t_strand == 1 else "-",
-                'length': t['end'] - t['start'],
-                'chrom': data['seq_region_name']
+                'start': t_start,
+                'end': t_end,
+                'length': t_end - t_start,
+                'chrom': str(data.get('seq_region_name', '')).replace('chr', '')
             })
             
         # Sort: Canonical first, then by length (descending)
         transcripts.sort(key=lambda x: (not x['is_canonical'], -x['length']))
-        
         return transcripts
         
     except Exception as e:
-        logger.error(f"Error fetching transcripts: {e}")
+        logger.error(f"Error fetching transcripts via Ensembl REST API: {e}")
         return []

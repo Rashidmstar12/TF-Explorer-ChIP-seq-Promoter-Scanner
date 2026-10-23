@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import scipy.stats
 
 # Configure logging
@@ -147,49 +147,75 @@ class TCGAClient:
             return {}
 
     @staticmethod
-    def fetch_expression_data(genes, study_id):
+    def fetch_expression_with_status(genes: List[str], study_id: str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """
-        Fetches mRNA expression data for the given genes in the specified study.
-        Accepts study_id directly (e.g., 'brca_tcga').
+        Fetches mRNA expression data for the given genes in the specified study with explicit status reporting.
+        Never falls back to synthetic or fabricated patient distributions (DEF-023).
+        Returns: (df_pivot, status_dict)
         """
+        if not genes or not study_id:
+            return pd.DataFrame(), {
+                "status": "UNAVAILABLE",
+                "message": "Gene list or TCGA study ID was empty.",
+                "study_id": study_id,
+                "genes_queried": genes or []
+            }
+
         # Discover Metadata
         profile_id, sample_list_id = TCGAClient.discover_study_metadata(study_id)
-        
         if not profile_id:
-            logger.warning("Could not find mRNA profile for study {}".format(study_id))
-            return pd.DataFrame()
+            msg = f"Could not find valid mRNA expression profile for TCGA study '{study_id}'."
+            logger.warning(msg)
+            return pd.DataFrame(), {
+                "status": "UNAVAILABLE",
+                "message": msg,
+                "study_id": study_id,
+                "genes_queried": genes
+            }
         
         # 1. Resolve Genes
         gene_map = TCGAClient.resolve_entrez_ids(genes)
         if not gene_map:
-            logger.warning("No Entrez IDs resolved for input genes.")
-            return pd.DataFrame()
+            msg = f"No Entrez IDs resolved for queried genes: {genes}."
+            logger.warning(msg)
+            return pd.DataFrame(), {
+                "status": "UNAVAILABLE",
+                "message": msg,
+                "study_id": study_id,
+                "genes_queried": genes
+            }
         
         entrez_ids = list(gene_map.values())
         
         # 2. Fetch Data
-        url = "{}/molecular-profiles/{}/molecular-data/fetch".format(BASE_URL, profile_id)
-        # Payload: NO molecularProfileId in body (fix from debugging)
+        url = f"{BASE_URL}/molecular-profiles/{profile_id}/molecular-data/fetch"
         payload = {
             "entrezGeneIds": entrez_ids,
             "sampleListId": sample_list_id
         }
         
-        logger.info("Fetching TCGA data for {} from {} (list: {})...".format(genes, profile_id, sample_list_id))
+        logger.info(f"Fetching TCGA data for {genes} from {profile_id} (list: {sample_list_id})...")
         
         try:
             resp = requests.post(url, json=payload, timeout=30)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                msg = f"cBioPortal API request failed with HTTP status {resp.status_code}."
+                logger.error(msg)
+                return pd.DataFrame(), {
+                    "status": "UNAVAILABLE",
+                    "message": msg,
+                    "study_id": study_id,
+                    "genes_queried": genes
+                }
             data = resp.json()
             
             # 3. Parse Response
             records = []
-            # Reverse map for column names
             id_to_symbol = {v: k for k, v in gene_map.items()}
             
             for item in data:
                 gid = item.get('entrezGeneId')
-                symbol = id_to_symbol.get(gid, "Entrez_{}".format(gid))
+                symbol = id_to_symbol.get(gid, f"Entrez_{gid}")
                 records.append({
                     "sampleId": item.get('sampleId'),
                     "gene": symbol,
@@ -197,40 +223,97 @@ class TCGAClient:
                 })
                 
             if not records:
-                return pd.DataFrame()
+                msg = f"No expression records returned from cBioPortal for {genes} in '{study_id}'."
+                return pd.DataFrame(), {
+                    "status": "UNAVAILABLE",
+                    "message": msg,
+                    "study_id": study_id,
+                    "genes_queried": genes
+                }
                 
             df_long = pd.DataFrame(records)
-            # Pivot
             df_pivot = df_long.pivot(index='sampleId', columns='gene', values='expression').dropna()
             
-            return df_pivot
+            return df_pivot, {
+                "status": "SUCCESS",
+                "message": f"Successfully retrieved {len(df_pivot)} patient sample profiles.",
+                "study_id": study_id,
+                "genes_queried": genes,
+                "samples_count": len(df_pivot)
+            }
             
         except requests.exceptions.RequestException as e:
-            logger.error("Error fetching TCGA data: {}".format(e))
-            return pd.DataFrame()
+            msg = f"Network error fetching TCGA expression data: {e}"
+            logger.error(msg)
+            return pd.DataFrame(), {
+                "status": "UNAVAILABLE",
+                "message": msg,
+                "study_id": study_id,
+                "genes_queried": genes
+            }
 
     @staticmethod
-    def calculate_correlation(df, tf, target):
+    def fetch_expression_data(genes, study_id):
+        """
+        Fetches mRNA expression data for the given genes in the specified study.
+        Returns pd.DataFrame (empty if unavailable).
+        """
+        df, _ = TCGAClient.fetch_expression_with_status(genes, study_id)
+        return df
+
+    @staticmethod
+    def calculate_correlation(df: pd.DataFrame, tf: str, target: str) -> Dict[str, Any]:
         """
         Calculates Pearson and Spearman correlations between TF and Target.
+        Returns explicit status dictionary with no synthetic fallback (DEF-023).
         """
-        if df.empty or tf not in df.columns or target not in df.columns:
-            return {}
+        if df is None or df.empty or tf not in df.columns or target not in df.columns:
+            return {
+                "status": "UNAVAILABLE",
+                "message": f"Cannot compute correlation: required columns ('{tf}', '{target}') missing or dataset empty.",
+                "pearson_r": None,
+                "pearson_p": None,
+                "spearman_r": None,
+                "spearman_p": None,
+                "n_samples": 0
+            }
             
         x = df[tf]
         y = df[target]
+        
+        if len(x) < 3:
+            return {
+                "status": "UNAVAILABLE",
+                "message": f"Insufficient sample size (N={len(x)}) to compute meaningful correlation.",
+                "pearson_r": None,
+                "pearson_p": None,
+                "spearman_r": None,
+                "spearman_p": None,
+                "n_samples": len(x)
+            }
         
         try:
             pearson_r, pearson_p = scipy.stats.pearsonr(x, y)
             spearman_r, spearman_p = scipy.stats.spearmanr(x, y)
             
             return {
-                "pearson_r": pearson_r,
-                "pearson_p": pearson_p,
-                "spearman_r": spearman_r,
-                "spearman_p": spearman_p,
-                "n_samples": len(df)
+                "status": "SUCCESS",
+                "message": "Correlation computed successfully.",
+                "pearson_r": float(pearson_r),
+                "pearson_p": float(pearson_p),
+                "spearman_r": float(spearman_r),
+                "spearman_p": float(spearman_p),
+                "n_samples": int(len(df))
             }
         except Exception as e:
-            logger.error("Correlation calculation failed: {}".format(e))
-            return {}
+            msg = f"Correlation calculation error: {e}"
+            logger.error(msg)
+            return {
+                "status": "UNAVAILABLE",
+                "message": msg,
+                "pearson_r": None,
+                "pearson_p": None,
+                "spearman_r": None,
+                "spearman_p": None,
+                "n_samples": len(df)
+            }

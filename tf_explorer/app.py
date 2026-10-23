@@ -10,15 +10,17 @@ import base64
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from tf_explorer import analysis, motifs, comparative, genome_client, tcga_client
+from tf_explorer import primer_design, integrity, robustness
 import importlib
-importlib.reload(motifs)
-importlib.reload(analysis)
-importlib.reload(comparative)
-importlib.reload(genome_client)
-importlib.reload(tcga_client)
-
-from tf_explorer import primer_design
-importlib.reload(primer_design)
+if "pytest" not in sys.modules:
+    importlib.reload(motifs)
+    importlib.reload(analysis)
+    importlib.reload(comparative)
+    importlib.reload(genome_client)
+    importlib.reload(tcga_client)
+    importlib.reload(primer_design)
+    importlib.reload(integrity)
+    importlib.reload(robustness)
 
 # Set page configuration
 st.set_page_config(
@@ -28,147 +30,13 @@ st.set_page_config(
 )
 
 
-def summarize_experiments(df_stats):
-    """
-    Standardizes experiment metrics calculation.
-    Input: df_stats (raw DataFrame from experiment_stats.csv)
-    Returns: (n_strict, n_loose, total_strict_peaks, total_loose_peaks, total_experiments, processed_df)
-    """
-    # 1. Rename columns to standardized names if needed
-    # Map CSV columns to internal names
-    col_map = {
-        'num_strict_peaks': 'num_overlapping_peaks_strict',
-        'num_loose_peaks': 'num_overlapping_peaks_loose',
-        'total_peaks_in_file': 'total_peaks'
-    }
-    df = df_stats.rename(columns=col_map)
-    
-    # Ensure required columns exist
-    for col in ['num_overlapping_peaks_strict', 'num_overlapping_peaks_loose']:
-        if col not in df.columns:
-            df[col] = 0
-            
-    # 2. Count files directly (no grouping)
-    # User wants to count every file/sample as an "experiment"
-    
-    n_strict = (df['num_overlapping_peaks_strict'] > 0).sum()
-    n_loose = (df['num_overlapping_peaks_loose'] > 0).sum()
-            
-    total_strict_peaks = df['num_overlapping_peaks_strict'].sum()
-    total_loose_peaks = df['num_overlapping_peaks_loose'].sum()
-    total_experiments = len(df) # Total files
-    
-    return n_strict, n_loose, total_strict_peaks, total_loose_peaks, total_experiments, df
+try:
+    from .analysis import summarize_experiments, plot_cell_line_comparison
+    from .external_apis import fetch_gtex_data, fetch_string_data, compute_tissue_coexpression_summary
+except ImportError:
+    from tf_explorer.analysis import summarize_experiments, plot_cell_line_comparison
+    from tf_explorer.external_apis import fetch_gtex_data, fetch_string_data, compute_tissue_coexpression_summary
 
-def plot_cell_line_comparison(summary_df):
-    """
-    Generates a bar chart comparing binding frequencies across cell lines.
-    """
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    
-    if summary_df.empty or 'biosample' not in summary_df.columns:
-        return None
-        
-    # Group by biosample
-    # Calculate % of files with strict peaks
-    stats = summary_df.groupby('biosample').agg(
-        total_files=('file_accession', 'count'),
-        files_with_peaks=('num_strict_peaks', lambda x: (x > 0).sum())
-    ).reset_index()
-    
-    stats['binding_rate'] = (stats['files_with_peaks'] / stats['total_files']) * 100
-    
-    # Sort by binding rate
-    stats = stats.sort_values('binding_rate', ascending=False)
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    sns.barplot(data=stats, x='biosample', y='binding_rate', ax=ax, palette='viridis')
-    
-    ax.set_title("TF Binding Rate by Cell Line (Strict Window)", fontsize=14)
-    ax.set_ylabel("Binding Rate (% of Files)", fontsize=12)
-    ax.set_xlabel("Cell Line", fontsize=12)
-    plt.tight_layout()
-    
-    return fig
-
-def get_gtex_cli_path():
-    home = os.path.expanduser("~")
-    return os.path.join(
-        home, 
-        ".gemini", "config", "plugins", "science", "skills", 
-        "gtex_database", "scripts", "gtex_cli.py"
-    )
-
-def get_string_cli_path():
-    home = os.path.expanduser("~")
-    return os.path.join(
-        home, 
-        ".gemini", "config", "plugins", "science", "skills", 
-        "string_database", "scripts", "string_cli.py"
-    )
-
-def fetch_gtex_data(gene_symbol, tf_list):
-    import subprocess
-    import tempfile
-    import json
-    
-    gtex_cli = get_gtex_cli_path()
-    if not os.path.exists(gtex_cli):
-        return None, "GTEx Database skill CLI not found."
-        
-    temp_dir = tempfile.gettempdir()
-    symbols = [gene_symbol] + tf_list
-    gencode_map = {}
-    
-    for sym in symbols:
-        out_id_file = os.path.join(temp_dir, f"gtex_id_{sym}.json")
-        cmd = ["uv", "run", gtex_cli, "resolve-gencode-id", sym, "--output", out_id_file]
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True, shell=True)
-            if os.path.exists(out_id_file):
-                with open(out_id_file, "r") as f:
-                    data = json.load(f)
-                gencode_map[sym] = data.get("gencode_id")
-                try: os.remove(out_id_file)
-                except OSError: pass
-        except Exception:
-            pass
-            
-    if not gencode_map.get(gene_symbol):
-        return None, f"Could not resolve GENCODE ID for target gene '{gene_symbol}'."
-        
-    expression_dfs = []
-    for sym, gid in gencode_map.items():
-        if not gid: continue
-        out_expr_file = os.path.join(temp_dir, f"gtex_expr_{sym}.json")
-        cmd = ["uv", "run", gtex_cli, "get-median-expression", gid, "--output", out_expr_file]
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True, shell=True)
-            if os.path.exists(out_expr_file):
-                with open(out_expr_file, "r") as f:
-                    expr_data = json.load(f)
-                try: os.remove(out_expr_file)
-                except OSError: pass
-                
-                if isinstance(expr_data, list) and len(expr_data) > 0:
-                    rows = []
-                    for entry in expr_data:
-                        rows.append({
-                            "tissue": entry.get("tissueSiteDetailId", "Unknown"),
-                            "TPM": entry.get("median", 0.0),
-                            "Gene": sym
-                        })
-                    df_sym = pd.DataFrame(rows)
-                    expression_dfs.append(df_sym)
-        except Exception:
-            pass
-            
-    if not expression_dfs:
-        return None, "Failed to retrieve median expression data from GTEx."
-        
-    df_combined = pd.concat(expression_dfs, ignore_index=True)
-    return df_combined, None
 
 def plot_gtex_expression(df_combined, gene_symbol):
     import matplotlib.pyplot as plt
@@ -200,87 +68,337 @@ def plot_gtex_expression(df_combined, gene_symbol):
     plt.tight_layout()
     return fig
 
-def fetch_string_data(gene_symbol, tf_list, species=9606):
-    import subprocess
-    import tempfile
+
+def run_evidence_robustness_workbench():
+    st.subheader("🧬 Regulatory Evidence & Multiverse Robustness Workbench")
+    st.markdown(
+        "Evaluate regulatory evidence reliability, verify ENCODE dataset provenance, audit biological experimental contexts "
+        "(treatments, epitope tags), and test conclusion stability across alternative transcripts and promoter windows."
+    )
+
+    from tf_explorer.integrity import EvidenceIntegrityEngine, ExperimentalContextStatus, ValidationStatusCode
+    from tf_explorer.robustness import RobustnessAnalyzer, RobustnessClassification
     import json
+
+    PRESETS = {
+        "CDK4 — E2F1 in MCF-7 (Demonstration: Transcript Sensitivity)": {
+            "gene": "CDK4",
+            "tf": "E2F1",
+            "biosample": "MCF-7",
+            "assembly": "GRCh38",
+            "file_acc": "ENCFF115KRO",
+            "exp_acc": "ENCSR000EWX",
+            "transcripts": [
+                {"id": "ENST00000257904.11", "name": "CDK4-201 (Canonical)", "tss": 57752310, "strand": "-", "is_canonical": True},
+                {"id": "ENST00000552713.5", "name": "CDK4-204 (Alternative)", "tss": 57749795, "strand": "-", "is_canonical": False}
+            ],
+            "peaks": [{"start": 57752169, "end": 57752512, "id": "cdk4_e2f1_pk1", "signal_value": 312.4}],
+            "desc": "Real E2F1 peak brackets canonical TSS 57,752,310, but is absent at alternative TSS 57,749,795. Note: Stably expresses HA-tagged E2F1."
+        },
+        "TFF1 — ESR1 in MCF-7 (Demonstration: Structural Stability)": {
+            "gene": "TFF1",
+            "tf": "ESR1",
+            "biosample": "MCF-7",
+            "assembly": "GRCh38",
+            "file_acc": "ENCFF185UUT",
+            "exp_acc": "ENCSR463GOT",
+            "transcripts": [
+                {"id": "ENST00000291527.3", "name": "TFF1-201 (Canonical)", "tss": 42366535, "strand": "-", "is_canonical": True}
+            ],
+            "peaks": [{"start": 42366395, "end": 42367086, "id": "tff1_esr1_pk1", "signal_value": 2601.5}],
+            "desc": "Intense ESR1 peak directly covers TSS across all window sizes. Note: Uses CRISPR C-terminal eGFP tag."
+        },
+        "TP53 — CTCF in MCF-7 (Demonstration: Estradiol Treatment & Parameter Sensitivity)": {
+            "gene": "TP53",
+            "tf": "CTCF",
+            "biosample": "MCF-7",
+            "assembly": "GRCh38",
+            "file_acc": "ENCFF685HMV",
+            "exp_acc": "ENCSR000DMS",
+            "transcripts": [
+                {"id": "ENST00000269305.9", "name": "TP53-201 (Canonical)", "tss": 7687490, "strand": "-", "is_canonical": True}
+            ],
+            "peaks": [{"start": 7688194, "end": 7688248, "id": "tp53_ctcf_pk1", "signal_value": 45.2}],
+            "desc": "CTCF binds -704 bp upstream (absent in -500/+100, present in -1000/+200). Note: Treated with 100 nM 17β-estradiol for 45 min."
+        },
+        "MYC — E2F1 in HeLa-S3 (Demonstration: Dual TSS / Parameter Sensitivity)": {
+            "gene": "MYC",
+            "tf": "E2F1",
+            "biosample": "HeLa-S3",
+            "assembly": "GRCh38",
+            "file_acc": "ENCFF004ZKN",
+            "exp_acc": "ENCSR000EVM",
+            "transcripts": [
+                {"id": "ENST00000621592.8", "name": "MYC-206 (MANE Select)", "tss": 127736231, "strand": "+", "is_canonical": True},
+                {"id": "ENST00000259523.10", "name": "MYC-201 (P1 Alternative)", "tss": 127735434, "strand": "+", "is_canonical": False}
+            ],
+            "peaks": [
+                {"start": 127735570, "end": 127735725, "id": "myc_pk1"},
+                {"start": 127735986, "end": 127736362, "id": "myc_pk2"}
+            ],
+            "desc": "Peak 2 directly brackets MANE Select TSS; Peak 1 overlaps P1 only under expanded downstream windows."
+        },
+        "Custom Investigation (Live Dynamic Mode)": None
+    }
+
+    st.markdown("### Step 1: Select Preset Case Study or Custom Locus")
+    preset_choice = st.selectbox("Benchmark Presets", list(PRESETS.keys()))
+
+    preset_data = PRESETS[preset_choice]
+    if preset_data:
+        st.info(f"**Preset Info**: {preset_data['desc']}")
+        default_gene = preset_data["gene"]
+        default_tf = preset_data["tf"]
+        default_bio = preset_data["biosample"]
+        default_file = preset_data["file_acc"]
+        default_exp = preset_data["exp_acc"]
+    else:
+        default_gene = "TP53"
+        default_tf = "CTCF"
+        default_bio = "MCF-7"
+        default_file = "ENCFF685HMV"
+        default_exp = "ENCSR000DMS"
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        wb_gene = st.text_input("Target Gene", value=default_gene)
+        wb_file = st.text_input("ENCODE File Accession", value=default_file)
+    with col2:
+        wb_tf = st.text_input("Target TF", value=default_tf)
+        wb_exp = st.text_input("ENCODE Experiment Accession", value=default_exp)
+    with col3:
+        wb_bio = st.text_input("Biosample / Cell Context", value=default_bio)
+        wb_asm = st.selectbox("Reference Assembly", ["GRCh38", "GRCh37"], index=0)
+
+    st.markdown("### Step 2: Experimental Context Requirements")
+    st.write("Specify biological constraints for the experimental condition:")
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        tr_option = st.radio(
+            "Treatment Requirement",
+            ["UNTREATED (Default / Strict)", "ANY (Unconstrained)", "Specific Treatment"],
+            index=0,
+            help="Require untreated basal conditions or allow specific perturbations."
+        )
+        tr_val = "UNTREATED" if "UNTREATED" in tr_option else ("ANY" if "ANY" in tr_option else st.text_input("Specific Treatment Term", value="estradiol"))
+    with col_c2:
+        gm_option = st.radio(
+            "Genetic Modification Requirement",
+            ["UNMODIFIED (Default / Strict)", "ANY (Unconstrained)", "Specific Tag"],
+            index=0,
+            help="Require endogenous wild-type protein or allow tagged/modified constructs."
+        )
+        gm_val = "UNMODIFIED" if "UNMODIFIED" in gm_option else ("ANY" if "ANY" in gm_option else st.text_input("Specific Tag (e.g. eGFP, HA)", value="eGFP"))
+
+    allow_exploratory = st.checkbox(
+        "Allow exploratory analysis with documented limitations (proceed despite context divergence)",
+        value=False,
+        help="If checked, context mismatches will be classified as CONTEXT_ACCEPTED_WITH_LIMITATIONS rather than blocking."
+    )
+
+    st.markdown("### Step 3: Provenance & Biological Context Audit")
+    if st.button("Audit Dataset Provenance & Biological Context", type="primary"):
+        with st.spinner("Auditing metadata against authoritative ENCODE schemas..."):
+            engine = EvidenceIntegrityEngine()
+            val_res = engine.verify(
+                file_accession=wb_file,
+                experiment_accession=wb_exp,
+                expected_tf=wb_tf,
+                expected_biosample=wb_bio,
+                expected_assembly=wb_asm,
+                treatment_requirement=tr_val,
+                genetic_modification_requirement=gm_val,
+                allow_exploratory_context=allow_exploratory
+            )
+            st.session_state["wb_validation"] = val_res
+
+    if "wb_validation" in st.session_state:
+        vr = st.session_state["wb_validation"]
+        
+        # Provenance badge
+        if vr.is_valid:
+            st.success(f"🟢 **Provenance Status**: {vr.status.value} — {vr.message}")
+        else:
+            st.error(f"🔴 **Provenance Status**: {vr.status.value} — {vr.message}")
+
+        # Context badge
+        if vr.context_status == ExperimentalContextStatus.CONTEXT_MATCH:
+            st.success(f"🟢 **Biological Context**: `CONTEXT_MATCH` — Matches requested conditions.")
+        elif vr.context_status == ExperimentalContextStatus.CONTEXT_ACCEPTED_WITH_LIMITATIONS:
+            st.warning(f"🟡 **Biological Context**: `CONTEXT_ACCEPTED_WITH_LIMITATIONS` — Divergence accepted for exploratory analysis.")
+        elif vr.context_status == ExperimentalContextStatus.CONTEXT_MISMATCH:
+            st.error(f"🔴 **Biological Context**: `CONTEXT_MISMATCH` — Experimental condition diverges from requirements.")
+        else:
+            st.info(f"ℹ️ **Biological Context**: `{vr.context_status.value}` — Unconstrained exploratory mode.")
+
+        # Show context warnings if any
+        if vr.context_warnings:
+            for w in vr.context_warnings:
+                st.warning(f"⚠️ **Context Warning**: {w}")
+
+        # Expander with biological context details
+        with st.expander("View Full Biological & Experimental Context Details", expanded=True):
+            ctx = vr.biological_context
+            st.write(f"**Biosample Term**: {ctx.get('biosample_term', 'Unknown')} (Ontology ID: `{ctx.get('biosample_ontology_id', 'N/A')}`)")
+            st.write(f"**Biosample Summary**: {ctx.get('biosample_summary', 'N/A')}")
+            st.write(f"**Treated**: {'Yes' if ctx.get('is_treated') else 'No'} | **Treatments**: {ctx.get('treatments', [])}")
+            st.write(f"**Genetically Modified**: {'Yes' if ctx.get('is_genetically_modified') else 'No'} | **Modifications**: {ctx.get('genetic_modifications', [])}")
+
+    st.markdown("### Step 4: Multiverse Robustness Grid & Evaluation")
+    st.write("Evaluate promoter binding across alternative transcripts and window definitions:")
     
-    string_cli = get_string_cli_path()
-    if not os.path.exists(string_cli):
-        return None, None, "STRING Database skill CLI not found."
+    # Separate Demonstration Mode from Live Dynamic Query Mode
+    if preset_data and preset_data.get("transcripts"):
+        eval_txs = preset_data["transcripts"]
+        eval_peaks = preset_data["peaks"]
+        st.info("🔬 **Demonstration Preset Active**: Loaded verified reference data for benchmark evaluation. These coordinates reflect published ENCODE and Ensembl annotations.")
+    else:
+        st.warning("🌐 **Live Dynamic Mode Active**: Enter any custom gene symbol to resolve against Ensembl & MANE Select.")
+        from tf_explorer.reference_resolver import DynamicReferenceResolver, ReferenceResolverStatus
+        resolver = DynamicReferenceResolver()
+        res = resolver.resolve(wb_gene)
+
+        eval_peaks = []
+        if res.status == ReferenceResolverStatus.REFERENCE_VERIFIED and res.gene_reference:
+            g_ref = res.gene_reference
+            st.success(
+                f"🟢 **Resolved Gene**: `{g_ref.gene_symbol}` (`{g_ref.ensembl_gene_id}`) | "
+                f"**Chromosome**: `{g_ref.chromosome}` | **Strand**: `{g_ref.strand}` | "
+                f"**Canonical TSS**: `{res.canonical_tss:,}` | **MANE Select**: `{res.canonical_transcript.transcript_id}`"
+            )
+            tx_options = [
+                f"{t.transcript_id} (TSS: {t.tss:,}{' - Canonical' if t.is_canonical else ''})"
+                for t in res.transcripts
+            ]
+            selected_tx_labels = st.multiselect(
+                "Select Transcripts to Include in Multiverse Grid",
+                options=tx_options,
+                default=[tx_options[0]] if tx_options else []
+            )
+            eval_txs = []
+            for t in res.transcripts:
+                lbl = f"{t.transcript_id} (TSS: {t.tss:,}{' - Canonical' if t.is_canonical else ''})"
+                if lbl in selected_tx_labels:
+                    eval_txs.append({
+                        "id": f"{t.transcript_id}.{t.transcript_version}",
+                        "name": t.display_name,
+                        "tss": t.tss,
+                        "strand": t.strand,
+                        "chrom": t.chromosome,
+                        "is_canonical": t.is_canonical
+                    })
+            if not eval_txs and res.canonical_transcript:
+                eval_txs = [{
+                    "id": f"{res.canonical_transcript.transcript_id}.{res.canonical_transcript.transcript_version}",
+                    "name": res.canonical_transcript.display_name,
+                    "tss": res.canonical_tss,
+                    "strand": res.strand,
+                    "chrom": res.chromosome,
+                    "is_canonical": True
+                }]
+        elif res.status == ReferenceResolverStatus.GENE_AMBIGUOUS:
+            st.error(f"🟡 **Ambiguous Gene Query**: `{wb_gene}` matches multiple loci.")
+            for c in res.ambiguous_candidates:
+                st.caption(f"- `{c.get('id')}`: {c.get('symbol')} ({c.get('biotype', 'unknown')})")
+            eval_txs = []
+        else:
+            st.error(f"🔴 **Reference Resolution Error**: {res.status.value} — {res.error_message or 'Gene not found'}")
+            eval_txs = []
+
+        with st.expander("Custom ChIP-seq Peak Coordinates (Optional)", expanded=False):
+            pk_col1, pk_col2 = st.columns(2)
+            with pk_col1:
+                custom_pk_start = st.number_input("Peak Start Coordinate (0 for unassayed/none)", value=0, step=100)
+            with pk_col2:
+                custom_pk_end = st.number_input("Peak End Coordinate (0 for unassayed/none)", value=0, step=100)
+            
+            if custom_pk_start > 0 and custom_pk_end > custom_pk_start:
+                eval_peaks = [{
+                    "chrom": res.chromosome if res.is_verified else "chr1",
+                    "start": int(custom_pk_start),
+                    "end": int(custom_pk_end),
+                    "id": "custom_user_peak",
+                    "signal_value": 50.0
+                }]
+                st.info(f"Custom Peak registered: `{eval_peaks[0]['chrom']}:{eval_peaks[0]['start']:,}–{eval_peaks[0]['end']:,}`")
+            else:
+                eval_peaks = []
+                st.caption("Live Mode Peaks: If no custom peak BED file is uploaded, testing unassayed/missing peak scenario (Negative-Inference Guardrail).")
+
+    st.write(f"**Transcripts in Grid** ({len(eval_txs)}):")
+    for t in eval_txs:
+        canon_lbl = " [Canonical]" if t.get("is_canonical") else ""
+        st.caption(f"- `{t['id']}`{canon_lbl} (TSS: {t['tss']:,}, Strand: `{t['strand']}`)")
+
+    if st.button("Run Multiverse Robustness Evaluation", type="primary"):
+        with st.spinner("Computing parameter sensitivity grid across transcripts and promoter windows..."):
+            analyzer = RobustnessAnalyzer()
+            bio_ctx = st.session_state.get("wb_validation").biological_context if "wb_validation" in st.session_state else {}
+            ctx_warns = st.session_state.get("wb_validation").context_warnings if "wb_validation" in st.session_state else []
+
+            exp_peak_sets = [{
+                "experiment_id": wb_exp,
+                "file_accession": wb_file,
+                "quality_tier": "optimal",
+                "biological_context": {**bio_ctx, "context_warnings": ctx_warns},
+                "peaks": eval_peaks
+            }]
+
+            rob_report = analyzer.evaluate(
+                gene_symbol=wb_gene,
+                target_tf=wb_tf,
+                biosample=wb_bio,
+                transcripts=eval_txs,
+                experiment_peak_sets=exp_peak_sets,
+                promoter_windows=[(500, 100), (1000, 200), (2000, 500)]
+            )
+            st.session_state["wb_robustness"] = rob_report
+
+    if "wb_robustness" in st.session_state:
+        rr = st.session_state["wb_robustness"]
         
-    temp_dir = tempfile.gettempdir()
-    identifiers = [gene_symbol] + tf_list
-    
-    out_map_file = os.path.join(temp_dir, "string_mapped.tsv")
-    cmd_map = [
-        "uv", "run", string_cli, "map",
-        "--identifiers"
-    ] + identifiers + [
-        "--species", str(species),
-        "--output", out_map_file
-    ]
-    
-    mapped_ids = []
-    try:
-        subprocess.run(cmd_map, capture_output=True, text=True, check=True, shell=True)
-        if os.path.exists(out_map_file):
-            df_map = pd.read_csv(out_map_file, sep='\t')
-            if not df_map.empty and 'stringId' in df_map.columns:
-                mapped_ids = df_map['stringId'].tolist()
-            try: os.remove(out_map_file)
-            except OSError: pass
-    except Exception:
-        mapped_ids = identifiers
+        # Classification banner
+        st.markdown(f"#### Multiverse Verdict: `{rr.classification.value}`")
+        st.info(f"**Stability Ratio**: `{rr.supporting_configurations}/{rr.total_valid_configurations}` ({rr.support_ratio:.1%}) | **Independent Experiments**: `{rr.experiment_support_fraction}`")
         
-    if not mapped_ids:
-        mapped_ids = identifiers
-        
-    out_img_file = os.path.join(temp_dir, f"string_network_{gene_symbol}.png")
-    cmd_img = [
-        "uv", "run", string_cli, "image",
-        "--identifiers"
-    ] + mapped_ids + [
-        "--species", str(species),
-        "--format", "highres_image",
-        "--output", out_img_file
-    ]
-    
-    img_bytes = None
-    try:
-        subprocess.run(cmd_img, capture_output=True, text=True, check=True, shell=True)
-        if os.path.exists(out_img_file):
-            with open(out_img_file, "rb") as f:
-                img_bytes = f.read()
-            try: os.remove(out_img_file)
-            except OSError: pass
-    except Exception:
-        pass
-        
-    out_partners_file = os.path.join(temp_dir, "string_partners.tsv")
-    cmd_part = [
-        "uv", "run", string_cli, "partners",
-        "--identifiers"
-    ] + mapped_ids + [
-        "--species", str(species),
-        "--limit", "15",
-        "--output", out_partners_file
-    ]
-    
-    df_partners = pd.DataFrame()
-    try:
-        subprocess.run(cmd_part, capture_output=True, text=True, check=True, shell=True)
-        if os.path.exists(out_partners_file):
-            df_partners = pd.read_csv(out_partners_file, sep='\t')
-            try: os.remove(out_partners_file)
-            except OSError: pass
-    except Exception:
-        pass
-        
-    if img_bytes is None and df_partners.empty:
-        return None, None, "Failed to retrieve STRING network or partner data."
-        
-    return img_bytes, df_partners, None
+        st.warning(f"**Statistical Guardrail**: {rr.negative_inference_guardrail}")
+        st.write(f"**Operational Rationale**: {rr.operational_rationale}")
+
+        # Grid Table
+        grid_data = []
+        for c in rr.configurations:
+            grid_data.append({
+                "Transcript": c.transcript_id + (" (Canonical)" if c.is_canonical else ""),
+                "TSS": f"{c.tss:,}",
+                "Strand": c.strand,
+                "Window": f"-{c.window_upstream}/+{c.window_downstream}",
+                "Promoter Interval": f"{c.promoter_start:,}–{c.promoter_end:,}",
+                "Peak Overlap": "Yes" if c.has_peak_overlap else "No",
+                "Overlap (bp)": c.overlapping_peaks[0]["overlap_bp"] if c.overlapping_peaks else 0,
+                "Status": c.data_status
+            })
+        st.table(pd.DataFrame(grid_data))
+
+        st.markdown("### Step 5: Reproducible Evidence Dossier Export")
+        md_text = rr.to_researcher_markdown()
+        json_text = json.dumps(rr.to_dict(), indent=2)
+
+        col_e1, col_e2 = st.columns(2)
+        with col_e1:
+            st.download_button(
+                label="📄 Download Researcher Evidence Dossier (.md)",
+                data=md_text,
+                file_name=f"TF_Explorer_Dossier_{wb_gene}_{wb_tf}_{wb_bio}.md",
+                mime="text/markdown"
+            )
+        with col_e2:
+            st.download_button(
+                label="⚙️ Download Machine-Readable Metadata (.json)",
+                data=json_text,
+                file_name=f"TF_Explorer_Evidence_{wb_gene}_{wb_tf}_{wb_bio}.json",
+                mime="application/json"
+            )
+
 
 def run_discovery_mode(gene_name, selected_tss, genome, promoter_up=2000, promoter_down=500, transcript_chrom=None, transcript_strand=None):
     st.subheader("Discovery Mode: Find TFs")
@@ -412,9 +530,9 @@ def main():
         
     mode = st.sidebar.radio(
         "Analysis Mode", 
-        ["Targeted Search", "Discovery Mode"], 
+        ["Targeted Search", "Discovery Mode", "Evidence & Robustness Workbench", "Disagreement Explorer"], 
         key="analysis_mode",
-        help="Choose 'Targeted Search' if you know the TFs. Choose 'Discovery Mode' to find TFs binding to this gene."
+        help="Choose 'Targeted Search' if you know the TFs. Choose 'Discovery Mode' to find TFs binding to this gene. Choose 'Evidence & Robustness Workbench' for evidence auditing and multiverse robustness. Choose 'Disagreement Explorer' to diagnose conflicting evidence across transcripts, promoter windows, experiments, and biological contexts."
     )
 
     # Transcript Selection
@@ -539,6 +657,17 @@ def main():
         genome = st.selectbox("Genome Assembly", ["hg38"], index=0)
         force_download = st.checkbox("Force Re-download Files", value=False, help="Check to delete cached files and re-download them. Use if you suspect corruption.")
 
+    if mode == "Evidence & Robustness Workbench":
+        st.sidebar.info("In Evidence & Robustness Workbench mode, evaluate data authenticity, experimental context, and multiverse robustness.")
+        run_evidence_robustness_workbench()
+        return
+
+    if mode == "Disagreement Explorer":
+        from tf_explorer.disagreement_panel import run_disagreement_explorer_panel
+        st.sidebar.info("In Disagreement Explorer mode, diagnose conflicting promoter evidence across transcripts, windows, and experiments.")
+        run_disagreement_explorer_panel()
+        return
+
     if mode == "Discovery Mode":
         st.sidebar.info("In Discovery Mode, we will search for any TFs binding to the promoter region.")
         run_discovery_mode(gene_name, selected_tss, genome, promoter_up, promoter_down, selected_chrom, selected_strand)
@@ -655,8 +784,7 @@ def main():
                                 jaspar_ids.append(item)
                     
                     # Run Analysis
-                    cache_dir = os.path.join(os.getcwd(), "encode_cache")
-                    os.makedirs(cache_dir, exist_ok=True)
+                    cache_dir = analysis.get_default_cache_dir()
                     out_dir = tempfile.mkdtemp(prefix="tf_explorer_")
                     
                     status_container = st.status("Running Analysis...", expanded=True)
@@ -1189,6 +1317,14 @@ Recommendation:
                             )
                         except Exception as e:
                             st.dataframe(df_gtex, use_container_width=True)
+                            
+                        # DEF-014: Cross-Tissue Co-Distribution Analysis
+                        df_gtex_summary = compute_tissue_coexpression_summary(df_gtex, gene_name, tf_list)
+                        if not df_gtex_summary.empty:
+                            st.divider()
+                            st.markdown("#### 🔬 Cross-Tissue Co-Distribution (Descriptive)")
+                            st.info("ℹ️ **Scientific Disclaimer (DEF-014):** Cross-tissue Spearman correlation evaluates anatomical co-enrichment of median TPM across 54 normal tissue sites. It does NOT demonstrate patient-level co-expression or direct causal transcriptional regulation.")
+                            st.dataframe(df_gtex_summary, use_container_width=True)
                     else:
                         st.warning("No baseline expression data returned from GTEx for the queried genes.")
 
@@ -1249,6 +1385,49 @@ Recommendation:
                             st.dataframe(df_display.sort_values(by="Combined Score", ascending=False) if "Combined Score" in df_display.columns else df_display, use_container_width=True)
                         else:
                             st.info("No detailed interactome partners table returned from STRING.")
+
+
+                if view_mode == "Functional Prediction (TCGA)":
+                    st.markdown("### Functional Prediction (TCGA Pan-Cancer Co-Expression)")
+                    st.markdown("Evaluate clinical patient-level mRNA co-expression between candidate transcription factors and the target gene across TCGA cancer cohorts.")
+                    
+                    tf_list_tcga = [tf.strip() for tf in tf_input.split(",") if tf.strip()]
+                    selected_tf = st.selectbox("Select Transcription Factor to Test", tf_list_tcga) if tf_list_tcga else None
+                    
+                    default_studies = [
+                        {"name": "Breast Invasive Carcinoma (TCGA, PanCancer Atlas)", "id": "brca_tcga_pan_can_atlas_2018"},
+                        {"name": "Lung Adenocarcinoma (TCGA, PanCancer Atlas)", "id": "luad_tcga_pan_can_atlas_2018"},
+                        {"name": "Colorectal Adenocarcinoma (TCGA, PanCancer Atlas)", "id": "coadread_tcga_pan_can_atlas_2018"},
+                        {"name": "Liver Hepatocellular Carcinoma (TCGA, PanCancer Atlas)", "id": "lihc_tcga_pan_can_atlas_2018"}
+                    ]
+                    study_options = {s["name"]: s["id"] for s in default_studies}
+                    chosen_study_name = st.selectbox("Select TCGA Study", list(study_options.keys()))
+                    chosen_study_id = study_options.get(chosen_study_name, "brca_tcga_pan_can_atlas_2018")
+                    
+                    if selected_tf and st.button("Query TCGA Expression"):
+                        with st.spinner(f"Querying cBioPortal API for {gene_name} and {selected_tf}..."):
+                            df_tcga, tcga_status = tcga_client.TCGAClient.fetch_expression_with_status([gene_name, selected_tf], chosen_study_id)
+                            
+                        if tcga_status.get("status") == "SUCCESS" and not df_tcga.empty:
+                            corr_stats = tcga_client.TCGAClient.calculate_correlation(df_tcga, selected_tf, gene_name)
+                            if corr_stats.get("status") == "SUCCESS":
+                                col_c1, col_c2, col_c3 = st.columns(3)
+                                col_c1.metric("Pearson r", f"{corr_stats['pearson_r']:.3f}", f"p={corr_stats['pearson_p']:.2e}")
+                                col_c2.metric("Spearman ρ", f"{corr_stats['spearman_r']:.3f}", f"p={corr_stats['spearman_p']:.2e}")
+                                col_c3.metric("Patients (N)", f"{corr_stats['n_samples']}")
+                                
+                                fig_tcga, ax_tcga = plt.subplots(figsize=(8, 5))
+                                ax_tcga.scatter(df_tcga[selected_tf], df_tcga[gene_name], alpha=0.5, color="steelblue")
+                                ax_tcga.set_xlabel(f"{selected_tf} Expression (log2 RSEM / FPKM)")
+                                ax_tcga.set_ylabel(f"{gene_name} Expression")
+                                ax_tcga.set_title(f"TCGA Patient Co-expression in {chosen_study_name}")
+                                ax_tcga.grid(True, alpha=0.3)
+                                st.pyplot(fig_tcga)
+                            else:
+                                st.warning(corr_stats.get("message", "Could not calculate correlation."))
+                        else:
+                            st.warning(f"**Data Unavailable (DEF-023):** {tcga_status.get('message', 'TCGA expression data could not be retrieved.')}")
+                            st.info("No synthetic or imputed patient curves are generated when live clinical data is unavailable.")
 
 
                 if view_mode == "Cell Line Comparison":

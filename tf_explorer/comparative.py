@@ -10,11 +10,12 @@ class ComparativeAnalysis:
     """
     Performs comparative analysis of TF binding between multiple groups (Cell Lines or TFs).
     """
-    def __init__(self, df_encode: pd.DataFrame, selected_items: List[str], gene_name: str, group_by: str = 'biosample'):
+    def __init__(self, df_encode: pd.DataFrame, selected_items: List[str], gene_name: str, group_by: str = 'biosample', strand: str = "+"):
         self.df = df_encode
         self.selected_items = selected_items
         self.gene_name = gene_name
         self.group_by = group_by
+        self.strand = strand
         
         # Filter data for each item
         self.data_map = {}
@@ -171,10 +172,12 @@ class ComparativeAnalysis:
             if peaks_df.empty:
                 return profile
             for _, row in peaks_df.iterrows():
-                peak_center = (row['peak_start'] + row['peak_end']) // 2
-                tss_inferred = peak_center - row['distance_to_tss']
-                start_rel = row['peak_start'] - tss_inferred
-                end_rel = row['peak_end'] - tss_inferred
+                # distance_to_tss is already signed relative to transcription direction
+                # (negative = upstream, positive = downstream).
+                # Reconstruct peak boundaries symmetrically around peak center offset.
+                half_width = (row['peak_end'] - row['peak_start']) / 2.0
+                start_rel = row['distance_to_tss'] - half_width
+                end_rel = row['distance_to_tss'] + half_width
                 
                 idx_start = int(start_rel + promoter_up)
                 idx_end = int(end_rel + promoter_up)

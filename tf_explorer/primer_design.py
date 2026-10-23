@@ -1,9 +1,24 @@
-import primer3
+try:
+    import primer3
+except ImportError:
+    primer3 = None
 
 def design_primers(sequence, product_size_min=70, product_size_max=300, primer_opt_size=20, primer_min_tm=57.0, primer_max_tm=63.0, target_junction=None, included_region=None):
     """
-    Generates primers using primer3-py.
+    Generates candidate PCR primers for promoter/amplicon regions using primer3-py.
+    
+    SCIENTIFIC METHODOLOGY (DEF-021):
+    Employs SantaLucia (1998) nearest-neighbor thermodynamic parameters for DNA duplex
+    stability, melting temperature (Tm), and secondary structure calculations.
+    
+    DISCLAIMER:
+    This is an in-silico computational screening tool. Empirical experimental validation
+    (e.g., standard curve efficiency, melt curve analysis, gel electrophoresis) is mandatory
+    to confirm amplification specificity and lack of off-target priming in biological specimens.
     """
+    if primer3 is None:
+        raise ImportError("primer3-py is required for primer design. Install it via 'pip install tf-explorer[primer]' or 'pip install primer3-py'.")
+
     seq_args = {
         'SEQUENCE_ID': 'example',
         'SEQUENCE_TEMPLATE': sequence,
@@ -47,16 +62,25 @@ def design_primers(sequence, product_size_min=70, product_size_max=300, primer_o
 
     try:
         results = primer3.bindings.designPrimers(seq_args, global_args)
+        if isinstance(results, dict):
+            results['methodology'] = "SantaLucia (1998) nearest-neighbor thermodynamics via primer3-py"
+            results['disclaimer'] = "Computational in-silico screening only. Empirical wet-lab validation required."
         return results
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "methodology": "primer3-py", "disclaimer": "Computational in-silico screening only."}
 
 def check_primer_safety(fp_seq, rp_seq):
     """
     Calculates secondary structures (hairpins, homodimers, heterodimers) for a primer pair.
     Returns safety status and thermodynamics.
     """
+    if primer3 is None:
+        return {
+            "safety_status": "⚠️ primer3-py not installed",
+            "error": "primer3-py is required for thermodynamic analysis."
+        }
     try:
+
         # Hairpin calculations
         hp_f = primer3.bindings.calc_hairpin(fp_seq)
         hp_r = primer3.bindings.calc_hairpin(rp_seq)
@@ -108,7 +132,9 @@ def check_primer_safety(fp_seq, rp_seq):
             "has_hp_r": has_hp_r,
             "has_hd_f": has_hd_f,
             "has_hd_r": has_hd_r,
-            "has_het": has_het
+            "has_het": has_het,
+            "methodology": "Nearest-neighbor thermodynamics (SantaLucia 1998)",
+            "disclaimer": "In-silico secondary structure calculation. Empirical assay validation required."
         }
     except Exception as e:
         return {

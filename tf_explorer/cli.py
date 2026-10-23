@@ -47,6 +47,7 @@ def main():
     
     # Output & Features
     parser.add_argument("--out", type=str, default="results", help="Output directory")
+    parser.add_argument("--cache-dir", type=str, default=None, help="Cache directory for ENCODE peak files (default: platform user cache)")
     parser.add_argument("--bed-output", action="store_true", help="Generate BED file of overlaps")
     parser.add_argument("--plot-track", action="store_true", help="Generate promoter track plot")
     parser.add_argument("--random-seed", type=int, default=42, help="Random seed for reproducibility")
@@ -81,12 +82,10 @@ def main():
             
     logger.info(f"Processing {len(genes)} gene(s)...")
     
+    success_count = 0
+    failure_count = 0
+
     for gene in genes:
-        # Create gene-specific output subdir if batch processing?
-        # Or just put everything in --out?
-        # If batch, probably better to have subdirs or prefixed files.
-        # analysis.py uses gene_name prefix, so flat dir is okay, but subdirs are cleaner.
-        
         gene_out_dir = os.path.join(args.out, gene) if len(genes) > 1 else args.out
         
         try:
@@ -99,13 +98,25 @@ def main():
                 promoter_down=args.promoter_down,
                 pwm_threshold=args.threshold,
                 output_dir=gene_out_dir,
+                cache_dir=args.cache_dir,
                 bed_output=args.bed_output,
                 plot_track=args.plot_track,
                 random_seed=args.random_seed
             )
+            success_count += 1
         except Exception as e:
             logger.error(f"Failed to analyze {gene}: {e}")
+            failure_count += 1
             continue
+
+    if success_count == 0 and failure_count > 0:
+        logger.error(f"Analysis failed for all {failure_count} requested gene(s).")
+        sys.exit(1)
+    elif failure_count > 0:
+        logger.warning(
+            f"Batch analysis completed with partial failures: "
+            f"{success_count} succeeded, {failure_count} failed."
+        )
 
 if __name__ == "__main__":
     main()
