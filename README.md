@@ -140,3 +140,15 @@ TF-Explorer is licensed under the **OSI-Approved MIT License**. See [LICENSE](LI
 Contributions are welcome! Please review our [Contributing Guidelines](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
 
 For inquiries or bug reports, open an issue on GitHub or contact `rashidmstar@pondiuni.ac.in`.
+
+---
+
+## 📊 Research Impact & JOSS Eligibility Status
+
+**Current JOSS Research Status:** JOSS RESEARCH IMPACT: NOT YET DEMONSTRATED
+
+- **Computational Tooling vs. Empirical Discovery:** TF-Explorer v3.1.0rc1 provides computational triage algorithms, geometric coordinate reconciliation, and authentication contracts. A passing automated test suite verifies expected code behaviors under specified conditions, not the absence of every conceivable defect or physical biological binding.
+- **Protected Prospective Benchmark:** Prospective biological benchmark cases remain strictly blinded and frozen to protect benchmark integrity and prevent post-hoc overfitting.
+- **Synthetic Demonstrations:** Quickstart scripts and test dispute scenarios represent synthetic demonstrations for testing and tutorial purposes, not empirical biological findings.
+- **Future JOSS Submission:** Formal submission to the Journal of Open Source Software (JOSS) is deferred until after public release, community review, independent human-led biological research applications, and complete manuscript-codebase synchronization.
+

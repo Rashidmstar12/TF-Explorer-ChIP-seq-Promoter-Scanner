@@ -1,5 +1,23 @@
 # Changelog
 
+## [3.1.0rc1] - 2026-10-23
+
+### Added
+- **Regulatory Promoter Disagreement Taxonomy:** Formalized 7-category taxonomy (`DIRECT_COINCIDENT_OCCUPANCY`, `MOTIF_UNSUPPORTED_CHIP_PEAK`, `UNBOUND_CANONICAL_MOTIF`, `PROMOTER_WINDOW_DEPENDENT`, `TRANSCRIPT_ISOFORM_SPECIFIC`, `CELL_TYPE_SPECIFIC_BINDING`, `TECHNICAL_ARTIFACT_OR_QUALITY_DISCORDANCE`) in `tf_explorer.disagreement_taxonomy`.
+- **Fail-Closed Evidence Contract:** Enforced cryptographic and biological metadata validation (`EvidenceConfiguration`, `PeakAuthenticator`, `EvidenceIntegrityEngine`) ensuring unauthenticated or synthetic data cannot masquerade as biological consensus.
+- **Offline Quickstart Demonstrations:** Standalone minimal demonstrations for coordinate expansion (`quickstart_promoter.py`) and synthetic disagreement triage (`quickstart_disagreement.py`).
+- **Comprehensive Public Test Matrix:** 119 public test cases spanning 18 modules with adversarial regression coverage.
+- **Cross-Platform Continuous Integration:** GitHub Actions matrix workflow verifying Ubuntu, macOS, and Windows across Python 3.10, 3.11, and 3.12.
+
+### Changed
+- **Packaging Standardization:** Modernized `pyproject.toml` with `setuptools.packages.find` for reliable editable and distribution installs.
+- **Cache Decoupling:** Removed 190+ historical cached binary BED files (`encode_cache/*.bed.gz`) from git tracking; runtime now operates entirely through dynamic REST API retrieval and built-in immutable reference registries.
+- **CI Dependency Upgrade:** Upgraded GitHub Actions runners to maintained Node 24 actions (`actions/checkout@v6`, `actions/setup-python@v6`).
+
+### Fixed
+- **Source Attribution Corrections:** Retracted erroneous citations of `ENCFF001UQF` (verified as TAF1 in SK-N-SH on hg19) and `ENCSR000BST` (verified as GATA3 in MCF-7) from project documentation; confirmed zero presence in core library or tests.
+- **Synthetic Flagging:** Explicitly tagged synthetic test pairs (`is_synthetic=True`, `auth_status="SYNTHETIC_DEMONSTRATION"`) to prevent conflation with authenticated biological assays.
+
 ## [3.0.0] - 2026-05-20
 
 ### Added
