@@ -112,7 +112,7 @@ AUTHORITATIVE_GENE_REGISTRY: Dict[str, Dict[str, Any]] = {
         "ncbi_gene_id": "7031",
         "ensembl_gene_id": "ENSG00000160182",
         "transcript_id": "ENST00000291527",
-        "transcript_version": "9",
+        "transcript_version": "3",
         "chromosome": "chr21",
         "strand": "-",
         "canonical_tss": 42366535,
@@ -567,14 +567,10 @@ class EvidenceContractValidator:
                     f"'{reg['transcript_id']}', but record claims '{record.transcript_id}'."
                 )
             if reg.get("transcript_version") and record.transcript_version != reg["transcript_version"]:
-                allowed_versions = [reg["transcript_version"]]
-                if record.gene_symbol == "TFF1":
-                    allowed_versions.extend(["3", "9"])
-                if record.transcript_version not in allowed_versions:
-                    errors.append(
-                        f"Gene '{record.gene_symbol}' transcript version mismatch: Authoritative MANE Select version is "
-                        f"'{reg['transcript_version']}', but record claims '{record.transcript_version}'."
-                    )
+                errors.append(
+                    f"Gene '{record.gene_symbol}' transcript version mismatch: Authoritative MANE Select version is "
+                    f"'{reg['transcript_version']}', but record claims '{record.transcript_version}'."
+                )
             if reg.get("ncbi_gene_id") and record.ncbi_gene_id != reg["ncbi_gene_id"]:
                 errors.append(
                     f"Gene '{record.gene_symbol}' NCBI Gene ID mismatch: Authoritative ID is "

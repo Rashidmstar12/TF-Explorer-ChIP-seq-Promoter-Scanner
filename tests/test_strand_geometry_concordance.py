@@ -93,7 +93,7 @@ class TestStrandGeometryConcordance:
     def test_tff1_multiverse_evaluation_negative_strand(self, analyzer):
         """End-to-end evaluation of TFF1 ESR1 in MCF-7 under negative strand geometry."""
         transcripts = [
-            {"id": "ENST00000291527.9", "name": "TFF1-201 (Canonical)", "tss": 42366535, "strand": "-", "is_canonical": True}
+            {"id": "ENST00000291527.3", "name": "TFF1-201 (Canonical)", "tss": 42366535, "strand": "-", "is_canonical": True}
         ]
         peaks = [{"chrom": "chr21", "start": 42366395, "end": 42367086, "signal_value": 2601.5}]
         exp_sets = [{"experiment_id": "ENCSR463GOT", "quality_tier": "optimal", "peaks": peaks}]
@@ -110,4 +110,4 @@ class TestStrandGeometryConcordance:
         assert rep.support_ratio == 1.0
         assert rep.supporting_configurations == 3
         assert rep.total_valid_configurations == 3
-        assert rep.transcript_support["ENST00000291527.9"] is True
+        assert rep.transcript_support["ENST00000291527.3"] is True

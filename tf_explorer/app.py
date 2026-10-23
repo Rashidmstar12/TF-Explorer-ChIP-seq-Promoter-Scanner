@@ -103,7 +103,7 @@ def run_evidence_robustness_workbench():
             "file_acc": "ENCFF185UUT",
             "exp_acc": "ENCSR463GOT",
             "transcripts": [
-                {"id": "ENST00000291527.9", "name": "TFF1-201 (Canonical)", "tss": 42366535, "strand": "-", "is_canonical": True}
+                {"id": "ENST00000291527.3", "name": "TFF1-201 (Canonical)", "tss": 42366535, "strand": "-", "is_canonical": True}
             ],
             "peaks": [{"start": 42366395, "end": 42367086, "id": "tff1_esr1_pk1", "signal_value": 2601.5}],
             "desc": "Intense ESR1 peak directly covers TSS across all window sizes. Note: Uses CRISPR C-terminal eGFP tag."

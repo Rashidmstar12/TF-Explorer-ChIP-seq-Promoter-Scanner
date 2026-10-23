@@ -70,7 +70,7 @@ PRESET_CONFIGURATIONS = {
         "configs": [
             {
                 "config_id": "TFF1_Standard_Window",
-                "transcript_id": "ENST00000291527.9",
+                "transcript_id": "ENST00000291527.3",
                 "tss": 42366535, "strand": "-", "is_mane": True,
                 "window": "Standard [-2000, +500]", "w_start": -2000, "w_end": 500,
                 "exp": "ENCSR463GOT", "file": "ENCFF185UUT",
@@ -78,7 +78,7 @@ PRESET_CONFIGURATIONS = {
             },
             {
                 "config_id": "TFF1_Downstream_Only",
-                "transcript_id": "ENST00000291527.9",
+                "transcript_id": "ENST00000291527.3",
                 "tss": 42366535, "strand": "-", "is_mane": True,
                 "window": "Downstream Only [0, +500]", "w_start": 0, "w_end": 500,
                 "exp": "ENCSR463GOT", "file": "ENCFF185UUT",
@@ -179,7 +179,7 @@ SUPPORTED_GENES = {
     },
     "TFF1": {
         "chrom": "chr21", "strand": "-", "canonical_tss": 42366535,
-        "transcripts": ["ENST00000291527.9 (MANE Select)"],
+        "transcripts": ["ENST00000291527.3 (MANE Select)"],
         "available_files": [
             get_file_metadata_from_catalog("ENCFF185UUT"),
             get_file_metadata_from_catalog("ENCFF142BHB"),

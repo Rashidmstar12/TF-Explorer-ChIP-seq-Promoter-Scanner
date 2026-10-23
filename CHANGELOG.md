@@ -15,6 +15,7 @@
 - **CI Dependency Upgrade:** Upgraded GitHub Actions runners to maintained Node 24 actions (`actions/checkout@v6`, `actions/setup-python@v6`).
 
 ### Fixed
+- **TFF1 Reference Contract:** Pinned canonical TFF1 transcript strictly to MANE Select `ENST00000291527.3` (`NM_003225.3`), eliminated unverified legacy `.9` from the biological registry, and enforced fail-closed `GENE_TRANSCRIPT_MISMATCH` validation.
 - **Source Attribution Corrections:** Retracted erroneous citations of `ENCFF001UQF` (verified as TAF1 in SK-N-SH on hg19) and `ENCSR000BST` (verified as GATA3 in MCF-7) from project documentation; confirmed zero presence in core library or tests.
 - **Synthetic Flagging:** Explicitly tagged synthetic test pairs (`is_synthetic=True`, `auth_status="SYNTHETIC_DEMONSTRATION"`) to prevent conflation with authenticated biological assays.
 
