@@ -437,3 +437,211 @@ def test_peak_profile_concordant_negative():
     )
     res = classify_peak_profile_concordance(c_a, c_b, False, True)
     assert res == "NO_PEAKS"
+
+# =========================================================================
+# Section 4: Task 2 and Task 3 Specific Regression Tests
+# =========================================================================
+
+def test_aggregate_set_mixed_comparable_and_incomparable(engine):
+    """
+    Task 2: Aggregate set with mixed comparable (identical) and incomparable (missing coords) pairs.
+    Must NOT report peak_profile_concordant=True or ROBUST_POSITIVE_EVIDENCE.
+    Must report peak_profile_concordance_status='SOME_INCOMPARABLE' and peak_profile_evaluable=False.
+    """
+    cfg_a = EvidenceConfiguration(
+        config_id="CFG_A", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR001", encode_file_accession="ENCFF001", biosample="MCF-7",
+        canonical_tss=57752310, strand="-", is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[{"chrom": "chr12", "start": 57751000, "end": 57752000}]
+    )
+    cfg_b = EvidenceConfiguration(
+        config_id="CFG_B", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR001", encode_file_accession="ENCFF001", biosample="MCF-7",
+        canonical_tss=57752310, strand="-", is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[{"chrom": "chr12", "start": 57751000, "end": 57752000}]
+    )
+    cfg_c = EvidenceConfiguration(
+        config_id="CFG_C", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR001", encode_file_accession="ENCFF001", biosample="MCF-7",
+        canonical_tss=57752310, strand="-", is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[], source_peak_start=None, source_peak_end=None
+    )
+
+    # Pairwise verification
+    diag_ab = engine.evaluate_pair(cfg_a, cfg_b, allow_synthetic_fixtures=True)
+    assert diag_ab.peak_profile_concordance == "IDENTICAL_PEAKS"
+
+    diag_ac = engine.evaluate_pair(cfg_a, cfg_c, allow_synthetic_fixtures=True)
+    assert diag_ac.peak_profile_concordance == "INCOMPARABLE"
+
+    # Aggregate set evaluation
+    res = engine.evaluate_set([cfg_a, cfg_b, cfg_c], allow_synthetic_fixtures=True)
+    assert res["positive_configurations_count"] == 3
+    assert res["status_concordant"] is True
+    assert res["peak_profile_concordant"] is None  # Must NOT be True!
+    assert res["peak_profile_evaluable"] is False
+    assert res["peak_profile_concordance_status"] == "SOME_INCOMPARABLE"
+    assert res["has_unresolved_interpretation"] is True
+    assert res["overall_status"] == "CONCORDANT_POSITIVE_PARAMETER_SENSITIVE"
+    assert res["overall_status"] != "ROBUST_POSITIVE_EVIDENCE"
+
+
+def test_aggregate_set_differing_and_incomparable(engine):
+    """
+    Task 2: Aggregate set with differing peak profiles and incomparable pair.
+    Must report peak_profile_concordance_status='PROFILES_DIFFER' and peak_profile_concordant=False.
+    """
+    cfg_a = EvidenceConfiguration(
+        config_id="CFG_A", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR001", encode_file_accession="ENCFF001", biosample="MCF-7",
+        canonical_tss=57752310, strand="-", is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[{"chrom": "chr12", "start": 57751000, "end": 57752000}]
+    )
+    cfg_b = EvidenceConfiguration(
+        config_id="CFG_B", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR001", encode_file_accession="ENCFF001", biosample="MCF-7",
+        canonical_tss=57752310, strand="-", is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[{"chrom": "chr12", "start": 57753000, "end": 57754000}]
+    )
+    cfg_c = EvidenceConfiguration(
+        config_id="CFG_C", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR001", encode_file_accession="ENCFF001", biosample="MCF-7",
+        canonical_tss=57752310, strand="-", is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[]
+    )
+
+    res = engine.evaluate_set([cfg_a, cfg_b, cfg_c], allow_synthetic_fixtures=True)
+    assert res["peak_profile_concordance_status"] == "PROFILES_DIFFER"
+    assert res["peak_profile_concordant"] is False
+    assert res["overall_status"] == "CONCORDANT_POSITIVE_PARAMETER_SENSITIVE"
+
+
+def test_different_peaks_same_experiment_and_file(engine):
+    """
+    Task 3 Case 1: Different peak profiles on identical experiment and file accession.
+    Must NOT attribute to PEAK_PROCESSING_DEPENDENT without verified processing divergence.
+    Causal explanation must remain unresolved.
+    """
+    cfg_a = EvidenceConfiguration(
+        config_id="CFG_A", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
+        processing_tier="conservative_idr_peaks", biosample="MCF-7", canonical_tss=57752310, strand="-",
+        is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[
+            {"chrom": "chr12", "start": 57751000, "end": 57752000}
+        ]
+    )
+    cfg_b = EvidenceConfiguration(
+        config_id="CFG_B", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
+        processing_tier="conservative_idr_peaks", biosample="MCF-7", canonical_tss=57752310, strand="-",
+        is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[
+            {"chrom": "chr12", "start": 57751000, "end": 57752000},
+            {"chrom": "chr12", "start": 57752200, "end": 57752500}
+        ]
+    )
+
+    diag = engine.evaluate_pair(cfg_a, cfg_b, allow_synthetic_fixtures=True)
+    assert diag.detection_status_concordance == "BOTH_POSITIVE"
+    assert diag.peak_profile_concordance == "DIFFERING_PEAK_COUNTS"
+    assert DisagreementClassification.PEAK_PROCESSING_DEPENDENT not in diag.primary_causes
+    assert diag.interpretive_uncertainty is not None
+    assert "unverified processing divergence" in diag.smallest_observed_difference
+    assert "causal mechanism remains unresolved" in diag.scientific_explanation
+
+
+def test_different_peaks_verified_different_processing_files(engine):
+    """
+    Task 3 Case 2: Different peak profiles with verified different processing files from the same experiment.
+    Must diagnose PEAK_PROCESSING_DEPENDENT.
+    """
+    cfg_a = EvidenceConfiguration(
+        config_id="CFG_A", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF001AAA",
+        processing_tier="conservative_idr_peaks", biosample="MCF-7", canonical_tss=57752310, strand="-",
+        is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[{"chrom": "chr12", "start": 57751000, "end": 57752000}]
+    )
+    cfg_b = EvidenceConfiguration(
+        config_id="CFG_B", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF002BBB",
+        processing_tier="pseudoreplicated_idr_peaks", biosample="MCF-7", canonical_tss=57752310, strand="-",
+        is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[
+            {"chrom": "chr12", "start": 57751000, "end": 57752000},
+            {"chrom": "chr12", "start": 57752200, "end": 57752500}
+        ]
+    )
+
+    diag = engine.evaluate_pair(cfg_a, cfg_b, allow_synthetic_fixtures=True)
+    assert diag.detection_status_concordance == "BOTH_POSITIVE"
+    assert diag.peak_profile_concordance == "DIFFERING_PEAK_COUNTS"
+    assert DisagreementClassification.PEAK_PROCESSING_DEPENDENT in diag.primary_causes
+
+
+def test_different_peaks_different_experiments(engine):
+    """
+    Task 3 Case 3: Different peak profiles from different experiments in identical context.
+    Must diagnose EXPERIMENT_DISCORDANT and NOT PEAK_PROCESSING_DEPENDENT.
+    """
+    cfg_a = EvidenceConfiguration(
+        config_id="CFG_A", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
+        biosample="MCF-7", canonical_tss=57752310, strand="-", is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[{"chrom": "chr12", "start": 57751000, "end": 57752000}]
+    )
+    cfg_b = EvidenceConfiguration(
+        config_id="CFG_B", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR000ZZZ", encode_file_accession="ENCFF999YYY",
+        biosample="MCF-7", canonical_tss=57752310, strand="-", is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[
+            {"chrom": "chr12", "start": 57751000, "end": 57752000},
+            {"chrom": "chr12", "start": 57752200, "end": 57752500}
+        ]
+    )
+
+    diag = engine.evaluate_pair(cfg_a, cfg_b, allow_synthetic_fixtures=True)
+    assert diag.detection_status_concordance == "BOTH_POSITIVE"
+    assert diag.peak_profile_concordance == "DIFFERING_PEAK_COUNTS"
+    assert DisagreementClassification.EXPERIMENT_DISCORDANT in diag.primary_causes
+    assert DisagreementClassification.PEAK_PROCESSING_DEPENDENT not in diag.primary_causes
+
+
+def test_peak_profiles_without_sufficient_coordinate_information(engine):
+    """
+    Task 3 Case 4: Peak profiles without sufficient coordinate information.
+    Must yield INCOMPARABLE peak profile and NOT assign PEAK_PROCESSING_DEPENDENT.
+    """
+    cfg_a = EvidenceConfiguration(
+        config_id="CFG_A", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
+        biosample="MCF-7", canonical_tss=57752310, strand="-", is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[{"chrom": "chr12", "start": 57751000, "end": 57752000}]
+    )
+    cfg_b = EvidenceConfiguration(
+        config_id="CFG_B", gene_symbol="CDK4", tf_target="E2F1", assembly="GRCh38",
+        encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
+        biosample="MCF-7", canonical_tss=57752310, strand="-", is_authenticated=True, is_synthetic=True,
+        evidence_status=EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION,
+        all_overlapping_peaks=[], source_peak_start=None, source_peak_end=None
+    )
+
+    diag = engine.evaluate_pair(cfg_a, cfg_b, allow_synthetic_fixtures=True)
+    assert diag.detection_status_concordance == "BOTH_POSITIVE"
+    assert diag.peak_profile_concordance == "INCOMPARABLE"
+    assert DisagreementClassification.PEAK_PROCESSING_DEPENDENT not in diag.primary_causes
+    assert diag.interpretive_uncertainty is not None

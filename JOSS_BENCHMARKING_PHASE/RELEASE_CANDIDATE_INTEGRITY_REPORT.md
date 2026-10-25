@@ -2,326 +2,183 @@
 
 **Document ID:** `RELEASE_CANDIDATE_INTEGRITY_REPORT.md`  
 **Date:** 2026-10-25  
-**Baseline Released Software:** TF-Explorer `v3.1.0rc1` (Release Commit `58f84a52e796a39fcc92dd36d43e524bb775e4eb`)  
-**Development Branch:** `fix/joss-diagnostic-engine-refactor`  
-**Author / Investigator:** Rashid Kadayil (ORCID: [0009-0009-6398-4557](https://orcid.org/0009-0009-6398-4557)), Department of Biotechnology, Pondicherry University  
-**Formal Evaluation Decision:** **`READY_FOR_RELEASE_CANDIDATE_CI`**
+**Candidate Release Version:** `3.1.0rc2.dev0` (distinguishable from public `v3.1.0rc1`)  
+**Target Pull Request:** PR #3 (Draft, `fix/joss-diagnostic-engine-refactor`)  
+**Investigator / Author:** Rashid Kadayil (ORCID: [0009-0009-6398-4557](https://orcid.org/0009-0009-6398-4557)), Department of Biotechnology, Pondicherry University  
 
 ---
 
 ## Executive Summary
 
-Following the JOSS Controlled Benchmark Pilot and the authorized architectural refactoring of the TF-Explorer Cause-of-Disagreement Engine, this Release-Candidate Integrity Gate was conducted to rigorously verify that the corrected pairwise classifications remain correct throughout the complete public API, including multi-configuration aggregate analysis (`evaluate_set()`), physical peak profile comparability, downstream matrix rendering, and serialization.
-
-The evaluation included:
-1. Identifying and remediating a critical aggregation defect in `evaluate_set()` where diagnoses containing `STABLE_WITHIN_EVALUATED_CHOICES` were previously discarded.
-2. Implementing an 8-way physical peak profile comparability classifier (`classify_peak_profile_concordance()`).
-3. Formally decoupling binary detection concordance from complete configuration agreement and diagnostic classification.
-4. Authoring and passing 29 comprehensive regression and multi-configuration aggregate tests (Cases A through H, REG-01 through REG-12, and 9 peak-profile tests).
-5. Independently building a clean wheel (`tf_explorer-3.1.0rc1-py3-none-any.whl`, SHA-256: `74e1ca8340eedb5985fa5883a597f270d8145ce8e9081fa6617851adc90f360b`) and validating all 29 tests from outside the repository in an isolated virtual environment (`tf_patched_wheel_venv`).
-6. Verifying 158 / 158 tests passing (100%) in the active codebase test suite.
-7. Reconciling the 19 pilot comparisons, explaining the 20 planned vs. 19 evaluated denominator difference (pseudoreplication of *MYC* in SCEN-06 / SCEN-13), and confirming 18 exact agreements with comparator, 1 intentional fail-closed security fixture (NEG-D), 0 implementation defects, and 0 design limitations.
+This report establishes the definitive, scientifically audited baseline for the TF-Explorer diagnostic engine refactor on branch `fix/joss-diagnostic-engine-refactor`. It directly addresses and resolves three specific scientific review findings:
+1. **Benchmark Record Inconsistency (Task 1):** Fully restores and documents the authentic 19-scenario historical baseline as executed in `run_benchmark_pilot_original.py` and recorded in `CONTROLLED_BENCHMARK_PILOT_RESULTS_ORIGINAL.csv`. Explicitly withdraws earlier draft claims containing substituted genes and an unexecuted 20th row (`NEG-A`), providing full 7-point reconciliation for every scenario.
+2. **`INCOMPARABLE` Peak Profile Aggregation in `evaluate_set()` (Task 2):** Corrects a critical aggregation bug where incomparable peak profiles (missing coordinates, cross-assembly, target TF mismatch) previously permitted `peak_profile_concordant=True` and false claims of `ROBUST_POSITIVE_EVIDENCE`. Implements a rigorous four-way classification (`ALL_PROFILES_IDENTICAL`, `PROFILES_DIFFER`, `SOME_INCOMPARABLE`, `NO_PEAKS`), a dedicated `peak_profile_evaluable: bool` flag, and `Optional[bool]` semantics for `peak_profile_concordant`.
+3. **Removal of Unsupported Processing Attribution in `evaluate_pair()` (Task 3):** Eliminates fallback attribution of `PEAK_PROCESSING_DEPENDENT` when peak profiles differ without verified processing file or pipeline divergence. Peak differences on identical experiment/file accessions are now classified separately in `peak_profile_concordance`, with causal explanation left honestly unresolved.
 
 ---
 
-## 1. Audit of Original `evaluate_set()` Behavior in `v3.1.0rc1`
+## 1. Task 1: Authentic 19-Scenario Historical Pilot Baseline Reconciliation
 
-In the published `v3.1.0rc1` release (commit `58f84a52e796a39fcc92dd36d43e524bb775e4eb`), `DisagreementEngine.evaluate_set()` contained the following aggregation filter (lines 550–555):
+### 1.1 Resolution of Historical Denominator Discrepancy
+The prespecified benchmark pilot protocol originally envisioned 14 exploratory scenarios (`SCEN-01` to `SCEN-14`) and 6 negative controls (`NEG-A` to `NEG-F`), totaling 20 planned comparisons. 
 
+However, the authentic pilot runner (`JOSS_BENCHMARKING_PHASE/PILOT_BASELINE_PRESERVATION/run_benchmark_pilot_original.py`) executed exactly **19 evaluated rows**, generating `CONTROLLED_BENCHMARK_PILOT_RESULTS_ORIGINAL.csv` with exactly 19 data rows:
+- **14 `SCEN-` rows:** `SCEN-01` through `SCEN-14`.
+- **5 `NEG-` rows:** `NEG-B`, `NEG-C`, `NEG-D`, `NEG-E`, and `NEG-F`.
+- **Status of `NEG-A`:** Line 574 of `run_benchmark_pilot_original.py` explicitly states:  
+  `print("Executing Scenario 13 / Negative Case A: Concordant Positive with Distinct Peaks...")`  
+  `diag_s13 = engine.evaluate_pair(cfg_s06_a, cfg_s06_b)`  
+  `SCEN-13` and `Negative Case A` were executed as a single step in the code, reusing the exact configuration pair from `SCEN-06` (*MYC* *ESR1* in MCF-7 cells). There was never a separate `NEG-A` execution row in the historical pilot.
+- **Withdrawal of Erroneous 20-Row Draft Claims:** An earlier report draft presented a speculative 20-row table featuring substituted genes (*CCND1*, *TP53*, *ACTB*, *EGFR*, *BRCA1*, *PTEN*, *CDKN1A*, *RB1*, *MDM2*, *VEGFA*, *GATA3*, *CTCF*, *GAPDH*) that were never part of the pilot runner. All such claims are formally withdrawn. The authentic, immutable 19-scenario historical baseline is restored below.
+
+### 1.2 Comprehensive 19-Scenario Forensic Inventory (7-Point Audit)
+
+The following table documents all 19 scenarios across all 7 required points:
+1. Original definition and biological inputs
+2. Exact accessions and configurations evaluated
+3. Observed output in the original pilot run (`v3.1.0rc1`)
+4. Current reported definition in prior draft
+5. Whether actually executed or only proposed
+6. Whether it is an exact duplicate of another scenario
+7. Whether renamed, substituted, or omitted
+
+| Scenario ID | 1. Original Definition & Biological Inputs | 2. Exact Accessions & Configurations Evaluated | 3. Observed Output in Pilot (`v3.1.0rc1`) | 4. Current Reported Definition in Prior Draft | 5. Executed vs Proposed | 6. Exact Duplicate? | 7. Historical Disposition & Reconciliation |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **SCEN-01** | Cross-assembly compatibility check | *CDK4* chr12:57752310 (-), E2F1 in MCF-7, ENCSR000EWX / ENCFF115KRO. Config A: hg19; Config B: GRCh38 | `INSUFFICIENT_COMPARABLE_DATA` | Erroneously reported as CDK4 identical parameters (`STABLE`) | **Actually Executed** (lines 201–230) | No | **Restored**: Fail-closed rejection of cross-assembly inputs. Prior identical-parameter narrative withdrawn. |
+| **SCEN-02** | Alternative transcript sharing canonical TSS | *CDK4* chr12:57752310 (-), E2F1 in MCF-7, ENCSR000EWX / ENCFF115KRO. Config A: ENST00000257904.11; Config B: ENST00000544414 | `STABLE_WITHIN_EVALUATED_CHOICES` | Erroneously reported as CCND1 ESR1 window shift | **Actually Executed** (lines 235–265) | No | **Restored**: Alternative transcript with identical TSS yields concordant binding. CCND1 substitution withdrawn. |
+| **SCEN-03** | Large TSS displacement altering promoter overlap | *HNF4A* chr20 (+), FOXA1 in HepG2, ENCSR000BGC / ENCFF235PEX. Config A: P1 (TSS 44435882, overlap 400 bp); Config B: P2 (TSS 44390342, 45.5 kb shift, 0 bp) | `TRANSCRIPT_GEOMETRY_DEPENDENT` | Erroneously reported as TP53 RELA cell-line discordance | **Actually Executed** (lines 270–295) | No | **Restored**: Authentic 45.5 kb TSS shift shifts promoter boundary away from peak. TP53 substitution withdrawn. |
+| **SCEN-04** | Strand-specific 5'->3' signed coordinate parity | Mathematical parity check: Negative strand TSS 57752310 [-500, +2000] vs Positive strand TSS 127736231 [-2000, +500] | Parity match with comparator (BED0: Neg=[57751810, 57754310); Pos=[127734230, 127736730)) | Erroneously reported as ACTB POLR2A | **Actually Executed** (lines 298–320) | No | **Restored**: 100% mathematical parity across strands. ACTB substitution withdrawn. |
+| **SCEN-05** | Promoter window boundary restriction | *TFF1* chr21:42366535 (-), ESR1 in MCF-7, ENCSR463GOT / ENCFF185UUT. Config A: Standard [-2000, 500] (336 bp); Config B: Distal [-3000, -1000] (0 bp) | `PROMOTER_WINDOW_DEPENDENT` | Erroneously reported as EGFR STAT3 multi-peak shift | **Actually Executed** (lines 324–350) | No | **Restored**: Authentic window boundary shift excludes binding peak. EGFR substitution withdrawn. |
+| **SCEN-06** | Promoter window shift with multi-peak profile | *MYC* chr8:127736231 (+), ESR1 in MCF-7, ENCSR463GOT / ENCFF185UUT. Config A: Standard [-2000, 500] (2 peaks); Config B: Distal [-3000, -1000] (1 peak) | `STABLE_WITHIN_EVALUATED_CHOICES` (Early-return limitation) | Reported as MYC ESR1 promoter window shift | **Actually Executed** (lines 351–385) | Yes (duplicated in SCEN-13) | **Restored**: Authentic MYC window comparison. v3.1.0rc1 masked peak count difference; resolved in patch. |
+| **SCEN-07** | Adversarial experiment-file metadata mismatch | *CDK4* chr12 (-), E2F1, ENCFF115KRO claimed under unassociated accession `ENCSR999FAKE` | `INSUFFICIENT_COMPARABLE_DATA` | Erroneously reported as BRCA1 JUN replicate discordance | **Actually Executed** (lines 386–410) | No | **Restored**: Fail-closed rejection of unassociated experiment metadata. BRCA1 substitution withdrawn. |
+| **SCEN-08** | Adversarial target TF biological mismatch | *CDK4* chr12 (-), E2F1 file ENCFF115KRO claimed as target TF `MYC` under ENCSR000EWX | `INSUFFICIENT_COMPARABLE_DATA` | Erroneously reported as PTEN FOXO3 negative control | **Actually Executed** (lines 415–440) | No | **Restored**: Fail-closed rejection of target TF mismatch. PTEN substitution withdrawn. |
+| **SCEN-09** | Cryptographic checksum mismatch on tampered bytes | *CDK4* chr12 (-), E2F1 file ENCFF115KRO with single-byte bit-flip at byte offset 50 | `INSUFFICIENT_COMPARABLE_DATA` | Erroneously reported as CDKN1A TP53 treatment context | **Actually Executed** (lines 445–475) | No | **Restored**: Cryptographic SHA-256 validation rejects corrupted bytes. CDKN1A substitution withdrawn. |
+| **SCEN-10** | Processing tier fixture (same experiment, diff files) | Synthetic fixture `ENCSR_PROC_EXP` with file `ENCFF_PROC1` vs `ENCFF_PROC2` | `PEAK_PROCESSING_DEPENDENT` | Erroneously reported as RB1 E2F4 transcript TSS shift | **Actually Executed** (lines 480–510) | No | **Restored**: Different processing files from same experiment diagnosed as processing dependent. |
+| **SCEN-11** | Authentic biological cell line discordance | *TFF1* chr21 (-), E2F1. Config A: MCF-7 (ENCSR000EWX / ENCFF115KRO, 238 bp); Config B: HeLa-S3 (ENCSR000EVM / ENCFF004ZKN, 0 bp) | `BIOLOGICAL_CONTEXT_DIFFERENT` | Erroneously reported as MDM2 TP53 replicate discordance | **Actually Executed** (lines 515–545) | No | **Restored**: E2F1 binding in MCF-7 absent in HeLa-S3 diagnosed as biological context difference. |
+| **SCEN-12** | Confounded biological cell line and window shift | *TFF1* chr21 (-), E2F1. Config A: MCF-7 Standard [-2000, 500] (238 bp); Config B: HeLa-S3 Distal [-3000, -1000] (0 bp) | `PROMOTER_WINDOW_DEPENDENT; BIOLOGICAL_CONTEXT_DIFFERENT` | Erroneously reported as VEGFA HIF1A processing pipeline | **Actually Executed** (lines 550–573) | No | **Restored**: Multivariate confounding detected; explicit attribution warning emitted. |
+| **SCEN-13** | Duplicate of SCEN-06 (Negative Case A) | Identical execution: `cfg_s06_a` vs `cfg_s06_b` (*MYC* *ESR1* in MCF-7, Standard vs Distal) | `STABLE_WITHIN_EVALUATED_CHOICES` (Early-return limitation) | Reported as duplicate of SCEN-06 | **Actually Executed** (lines 574–594) | **Yes (exact duplicate of SCEN-06)** | **Restored**: Identified as pseudoreplication of SCEN-06 in historical runner (titled "Scenario 13 / Negative Case A"). |
+| **SCEN-14** | Independent replicate experiment discordance | *PKM* chr15:72231190 (-), CREB1 in MCF-7, Distal [-3000, -1000]. Config A: ENCSR620DUQ / ENCFF142BHB (0 bp); Config B: ENCSR897JAS / ENCFF030DLI (416 bp) | `EXPERIMENT_DISCORDANT` | Erroneously reported as TFF1 ESR1 cryptographic tamper | **Actually Executed** (lines 595–625) | No | **Restored**: Independent replicate ChIP-seq assays in identical cell line yield discordant binding. |
+| **NEG-B** | Negative Control B: Concordant positive, window shift | *CDK4* chr12 (-), E2F1 in MCF-7 (ENCFF115KRO). Config A: Standard [-2000, 500] (343 bp); Config B: Core [-500, 100] (302 bp) | `STABLE_WITHIN_EVALUATED_CHOICES` (Early-return limitation) | Erroneously reported as ESR1 ESR1 diff window on neg | **Actually Executed** (lines 631–660) | No | **Restored**: v3.1.0rc1 masked window difference because both were positive; resolved in patch. |
+| **NEG-C** | Negative Control C: Concordant positive, cell-line shift | *CDK4* chr12 (-), E2F1 in Standard window. Config A: MCF-7 (ENCFF115KRO, 343 bp); Config B: HeLa-S3 (ENCFF004ZKN, 302 bp) | `STABLE_WITHIN_EVALUATED_CHOICES` (Early-return limitation) | Erroneously reported as FOXA1 FOXA1 diff context on neg | **Actually Executed** (lines 665–695) | No | **Restored**: v3.1.0rc1 masked cell-line shift because both were positive; resolved in patch. |
+| **NEG-D** | Negative Control D: Authentic vs synthetic mock guard | Synthetic processing fixture from `ENCSR_PROC_EXP` paired with authentic record | `INSUFFICIENT_COMPARABLE_DATA` | Erroneously reported as CTCF CTCF synth vs auth guard | **Actually Executed** (lines 699–730) | No | **Restored**: Fail-closed security boundary rejecting synthetic-vs-authentic biological consensus. |
+| **NEG-E** | Negative Control E: Contradictory evidence on identical accession | Synthetic contradictory evidence asserted on identical metadata and file accession `ENCFF_SAME` | `EXPERIMENT_DISCORDANT` (Implementation Defect in baseline) | Accurately reported as NEG-E | **Actually Executed** (lines 735–765) | No | **Restored**: Baseline defect emitted EXPERIMENT_DISCORDANT on identical accession; resolved to fail-closed. |
+| **NEG-F** | Negative Control F: Confounded 3-parameter shift | Synthetic multi-parameter shift: biosample + treatment + window offset | `PROMOTER_WINDOW_DEPENDENT; BIOLOGICAL_CONTEXT_DIFFERENT` | Erroneously reported as GAPDH MYC identical neg params | **Actually Executed** (lines 769–805) | No | **Restored**: Confounding across 3 dimensions correctly diagnosed with multivariate warning. |
+
+### 1.3 Breakdown of the Unique Evaluated Scenarios
+- **Total Historical Executed Scenario Records:** **19 rows** in `CONTROLLED_BENCHMARK_PILOT_RESULTS_ORIGINAL.csv`.
+- **Unique Evaluated Pairwise Comparisons:** **18 unique pairs** (SCEN-06 and SCEN-13 evaluated the exact same configuration pair).
+- **Exact Duplicate Pairs:** **1 pair** (SCEN-13 was an exact code duplicate of SCEN-06).
+- **Authentic Biological Comparisons:** **7 comparisons** (SCEN-02 CDK4 alternative transcript, SCEN-03 HNF4A TSS displacement, SCEN-05 TFF1 window shift, SCEN-06/13 MYC multi-peak profile, SCEN-11 TFF1 cell-line shift, SCEN-12 TFF1 confounded cell line/window, SCEN-14 PKM replicate discordance).
+- **Mathematical Parity Verification:** **1 comparison** (SCEN-04 signed strand promoter coordinate math).
+- **Synthetic, Adversarial, and Negative Controls:** **10 comparisons** (SCEN-01 assembly mismatch, SCEN-07 metadata mismatch, SCEN-08 TF mismatch, SCEN-09 tampered bytes, SCEN-10 processing tier fixture, NEG-B CDK4 window shift, NEG-C CDK4 cell-line shift, NEG-D authentic vs synthetic guard, NEG-E internal contradiction, NEG-F multi-parameter confounding).
+- **Scenarios Never Executed:** **1 scenario** (`NEG-A` as an independent row was never executed; line 574 of runner executed SCEN-13 as "Negative Case A").
+
+---
+
+## 2. Task 2: Correct `INCOMPARABLE` Aggregation in `DisagreementEngine.evaluate_set()`
+
+### 2.1 The Incomparable Aggregation Bug
+In `evaluate_set()`, when configurations could not be evaluated geometrically—due to missing peak coordinates, cross-assembly comparison, different target TFs, or unauthenticated/synthetic pairing—the pairwise classifier returned `diag.peak_profile_concordance == "INCOMPARABLE"`.
+
+The prior aggregation logic evaluated:
 ```python
-# Flawed aggregation filter in v3.1.0rc1:
-for diag in all_pairwise_diagnoses:
-    if DisagreementClassification.STABLE_WITHIN_EVALUATED_CHOICES not in diag.primary_causes:
-        retained_diagnoses.append(diag)
+if diag.peak_profile_concordance not in ("IDENTICAL_PEAKS", "NO_PEAKS", "INCOMPARABLE"):
+    all_pairs_peak_concordant = False
 ```
+Because `"INCOMPARABLE"` was included in the exclusion tuple, `all_pairs_peak_concordant` remained `True`. Consequently:
+1. `evaluate_set()` returned `peak_profile_concordant=True`.
+2. Sets with missing peak coordinates were erroneously promoted to `overall_status = "ROBUST_POSITIVE_EVIDENCE"`.
+3. The generated scientific interpretation falsely claimed: `"Unanimous positive evidence... with identical analytical parameters and peak profiles."`
 
-### 1.1 The Swallowing Defect
-The original design intent was to omit trivial "self-concordant" comparisons from the reported causes list. However, because `v3.1.0rc1`'s `evaluate_pair()` previously suffered from Limitation-01 (early return upon identical binary detection), it never emitted combined causes.
+### 2.2 The Four-Way Evaluability Architecture
+The patched engine decouples binary detection, configuration agreement, and physical peak geometry across explicit four-state evaluability logic:
 
-Once `evaluate_pair()` was patched to properly audit multi-dimensional parameter shifts—returning combinations such as:
-- `STABLE_WITHIN_EVALUATED_CHOICES` alongside `PROMOTER_WINDOW_DEPENDENT`,
-- Stable detection across differing biological cell lines (`BIOLOGICAL_CONTEXT_DISCORDANCE`), or
-- Stable detection with differing peak profiles (`PEAK_MULTIPLICITY_OR_PROFILE_SHIFT`),
+1. **`ALL_PROFILES_IDENTICAL`:** All evaluated positive configurations have comparable peak coordinates, every evaluated pair exhibits identical genomic intervals (`IDENTICAL_PEAKS`), and zero pairs are incomparable or differing.
+   - `peak_profile_concordance_status = "ALL_PROFILES_IDENTICAL"`
+   - `peak_profile_evaluable = True`
+   - `peak_profile_concordant = True`
+   - Only this state permits `overall_status = "ROBUST_POSITIVE_EVIDENCE"`.
+2. **`PROFILES_DIFFER`:** One or more evaluated pairs exhibit differing physical peak profiles (`DISTINCT_PEAKS`, `DIFFERING_PEAK_COUNTS`, `PARTIALLY_SHARED_PEAKS`, `OVERLAPPING_PEAKS_OFFSET`).
+   - `peak_profile_concordance_status = "PROFILES_DIFFER"`
+   - `peak_profile_evaluable = True` (or `False` if mixed with incomparable, but difference is confirmed)
+   - `peak_profile_concordant = False`
+   - `overall_status = "CONCORDANT_POSITIVE_PARAMETER_SENSITIVE"`
+3. **`SOME_INCOMPARABLE`:** Some or all positive configurations lack peak coordinates or cannot be compared geometrically, and no definitive difference was established.
+   - `peak_profile_concordance_status = "SOME_INCOMPARABLE"`
+   - `peak_profile_evaluable = False`
+   - `peak_profile_concordant = None` (Optional[bool], strictly not `True`)
+   - `has_unresolved_interpretation = True`
+   - `overall_status = "CONCORDANT_POSITIVE_PARAMETER_SENSITIVE"` (claims of identical peak profiles are blocked)
+4. **`NO_PEAKS`:** All evaluated configurations have verified non-detection (`VERIFIED_NO_PEAK_DETECTED`).
+   - `peak_profile_concordance_status = "NO_PEAKS"`
+   - `peak_profile_evaluable = False` (no physical peaks exist to compare)
+   - `peak_profile_concordant = True` (concordant absence of peaks)
 
-the unmodified `evaluate_set()` filter inspected `diag.primary_causes` and **unconditionally dropped any diagnosis that contained `STABLE_WITHIN_EVALUATED_CHOICES`**.
-
-### 1.2 Downstream Consequences
-As a direct consequence:
-- When a researcher evaluated an evidence set with identical positive detection but differing promoter windows (e.g., standard `[-2000, 500]` vs. upstream `[-2000, 0]`), `evaluate_set()` discarded the window-dependency diagnosis.
-- `observed_causes` was returned as `[]` (empty list).
-- `overall_status` collapsed to `CONCORDANT_POSITIVE`, falsely claiming complete analytical stability and concealing parameter divergence from the researcher.
-
----
-
-## 2. Patched `evaluate_set()` Architecture and Behavior
-
-`DisagreementEngine.evaluate_set()` was completely re-architected on branch `fix/joss-diagnostic-engine-refactor` to eliminate the discarding filter and introduce multi-dimensional aggregate metrics.
-
-### 2.1 Complete Divergence Retention
-A pairwise diagnosis is now retained as an active diagnostic finding in `evaluate_set()` if **any** of the following conditions are met:
-1. Any cause other than `STABLE_WITHIN_EVALUATED_CHOICES` is present in `diag.primary_causes`.
-2. `not diag.configuration_concordance` (analytical or metadata parameters differ).
-3. `diag.peak_profile_concordance not in ("IDENTICAL_PEAKS", "NO_PEAKS")` (physical peak intervals differ).
-4. Detection status is discordant (`DISCORDANT`).
-5. Primary cause is `INSUFFICIENT_COMPARABLE_DATA` (unauthenticated or unverified evidence).
-
-### 2.2 Granular Multi-Dimensional Flags
-`evaluate_set()` now computes and returns five explicit boolean flags:
-- `detection_status_concordant: bool` — True if and only if all evaluated configurations share the exact same binary detection status (all positive or all negative).
-- `configuration_concordant: bool` — True if and only if all evaluated configurations share identical analytical and biological parameters (transcript TSS, promoter window, cell line, treatment, genetic modification, processing tier).
-- `peak_profile_concordant: bool` — True if and only if all positive configurations exhibit identical physical peak coordinates (`IDENTICAL_PEAKS` or `NO_PEAKS` for negatives).
-- `has_unresolved_interpretation: bool` — True if any pair exhibits unexplained discordance or internal contradictions.
-- `has_invalid_or_unauthenticated_evidence: bool` — True if unauthenticated, synthetic-vs-authentic, or tampered evidence is detected.
-
-### 2.3 Nuanced Overall Status
-Rather than collapsing to a coarse binary call, `overall_status` reports:
-- `EMPTY_SET`: Configuration list is empty.
-- `INSUFFICIENT_OR_UNVERIFIED_DATA`: Evidence contains unauthenticated, synthetic, or tampered data.
-- `DISCORDANT_OBSERVATIONS`: Genuine conflict in binding calls across experiments or parameters.
-- `CONCORDANT_POSITIVE_IDENTICAL`: All configurations detect peaks with identical parameters and identical physical peak profiles.
-- `CONCORDANT_POSITIVE_PARAMETER_SENSITIVE`: All configurations detect peaks, but promoter windows, biological cell lines, or peak profiles vary.
-- `CONCORDANT_NEGATIVE_IDENTICAL`: All configurations detect no peaks under identical experimental contexts.
-- `CONCORDANT_NEGATIVE_CONTEXT_SENSITIVE`: All configurations detect no peaks, but span multiple distinct biological cell lines or treatments.
-
-### 2.4 Multiverse Fallacy Protection
-`evaluate_set()` explicitly decouples configuration multiplicity from independent biological replicates:
-- `total_configurations_count`: Total evaluated parameter configurations.
-- `unique_experiments_count`: Number of distinct ENCODE experiment accessions (`ENCSR...`).
-- `scientific_interpretation`: Explicitly warns researchers when multiple configurations originate from a single assay, preventing false claims of high statistical consensus.
+### 2.3 Public API Compatibility
+To preserve backwards compatibility for existing callers expecting a boolean:
+- The boolean flag `peak_profile_evaluable: bool` provides unambiguous confirmation of whether geometric comparison was possible.
+- The field `peak_profile_concordant: Optional[bool]` evaluates to `False` in standard falsy checks (`if not res["peak_profile_concordant"]:` is True when `None`).
+- Strict boolean callers can query `res.get("peak_profile_concordant") is True`.
 
 ---
 
-## 3. Pairwise-to-Aggregate Consistency Tests (Cases A through H)
+## 3. Task 3: Removal of Unsupported Processing Attribution in `evaluate_pair()`
 
-To verify the integrity of `evaluate_set()`, an exhaustive regression test suite was implemented in `tests/test_aggregate_and_peak_regression.py`.
+### 3.1 The Flawed Attribution Fallback
+In `evaluate_pair()`, when detection status was concordant positive but peak coordinates differed, prior fallback logic assigned:
+```python
+causes.append(DisagreementClassification.PEAK_PROCESSING_DEPENDENT if not exp_differs else DisagreementClassification.EXPERIMENT_DISCORDANT)
+```
+If two configurations used the **exact same experiment accession and exact same file accession**, attributing the peak difference to `PEAK_PROCESSING_DEPENDENT` was scientifically invalid: no processing setting, IDR tier, or peak caller pipeline actually differed.
 
-### 3.1 Aggregate Multi-Configuration Test Results
+### 3.2 Strict Processing Verification Contract
+The patch enforces that `PEAK_PROCESSING_DEPENDENT` is assigned **if and only if** verified processing divergence is established:
+1. `config_a.encode_file_accession != config_b.encode_file_accession` (different processing files from the same experiment), OR
+2. `config_a.processing_tier != config_b.processing_tier` (different processing tiers from the same experiment).
 
-| Case | Scenario Description | Expected Overall Status | Observed Causes | Test Verdict |
-| :--- | :--- | :--- | :--- | :--- |
-| **Case A** | 2 positive configs with differing promoter windows (`[-2000, 500]` vs `[-2000, 0]`) | `CONCORDANT_POSITIVE_PARAMETER_SENSITIVE` | `['PROMOTER_WINDOW_DEPENDENT']` | **PASSED** |
-| **Case B** | 2 positive configs with differing physical peaks (single peak vs multiple peaks) | `CONCORDANT_POSITIVE_PARAMETER_SENSITIVE` | `['PEAK_MULTIPLICITY_OR_PROFILE_SHIFT']` | **PASSED** |
-| **Case C** | 2 positive configs with differing biosamples (MCF-7 vs K562) | `CONCORDANT_POSITIVE_PARAMETER_SENSITIVE` | `['BIOLOGICAL_CONTEXT_DISCORDANCE']` | **PASSED** |
-| **Case D** | 3 configs: 2 positive, 1 negative (mixed calls across windows/contexts) | `DISCORDANT_OBSERVATIONS` | `['PROMOTER_WINDOW_DEPENDENT']` | **PASSED** |
-| **Case E** | 2 negative configs in distinct biological cell lines | `CONCORDANT_NEGATIVE_CONTEXT_SENSITIVE` | `['BIOLOGICAL_CONTEXT_DISCORDANCE']` | **PASSED** |
-| **Case F** | 1 authenticated positive and 1 synthetic positive fixture | `INSUFFICIENT_OR_UNVERIFIED_DATA` | `['INSUFFICIENT_COMPARABLE_DATA']` | **PASSED** |
-| **Case G** | Multiple simultaneous analytical differences (differing window and cell line) | `CONCORDANT_POSITIVE_PARAMETER_SENSITIVE` | `['BIOLOGICAL_CONTEXT_DISCORDANCE', 'PROMOTER_WINDOW_DEPENDENT']` | **PASSED** |
-| **Case H** | Empty configuration set `[]` | `EMPTY_SET` | `[]` | **PASSED** |
+Where peak profiles differ without verified processing divergence:
+- `PEAK_PROCESSING_DEPENDENT` is **strictly not assigned** (`causes` does not include processing dependency).
+- The peak difference is classified separately via `diag.peak_profile_concordance` (`DIFFERING_PEAK_COUNTS`, `DISTINCT_PEAKS`, etc.).
+- Causal explanation is left unresolved: `diag.interpretive_uncertainty` is set to `"Peak profile difference observed without verified processing divergence or metadata shift; causal explanation remains unresolved."`
+- `diag.smallest_observed_difference` reports `"Peak profile difference: {concordance} (unverified processing divergence)"`.
+- Caveats explicitly state: `"PEAK_PROFILE_DIFFERENCE: Overlapping peak profiles differ without verified processing file or pipeline metadata divergence; causal explanation cannot be attributed to processing."`
 
-### 3.2 Physical Peak Profile Comparability Classifier Results
-Nine dedicated unit tests in `tests/test_aggregate_and_peak_regression.py` verified `classify_peak_profile_concordance()`:
+---
 
-| Test Name | Peak Comparison Scenario | Expected Classification | Test Verdict |
+## 4. Test Suite and Regression Verification (Tasks 2, 3, and 4)
+
+### 4.1 Comprehensive Test Suite Summary
+All 164 tracked tests pass cleanly across local development and clean-wheel environments:
+- `tests/test_aggregate_and_peak_regression.py`: **23 / 23 PASSED** (up from 17, adding 6 new regression tests)
+- `tests/test_diagnostic_engine_regression.py`: **12 / 12 PASSED**
+- All 19 other tracked test modules: **129 / 129 PASSED**
+- **Total Tracked Test Suite: 164 / 164 PASSED (100%)**
+
+### 4.2 Breakdown of Dedicated Regression Tests
+The 6 new regression tests in `tests/test_aggregate_and_peak_regression.py` explicitly validate Tasks 2 and 3:
+
+| Test Name | Validated Contract | Key Assertions | Verdict |
 | :--- | :--- | :--- | :--- |
-| `test_peak_profile_identical` | Exactly matching coordinates on both configurations | `IDENTICAL_PEAKS` | **PASSED** |
-| `test_peak_profile_partially_shared` | 1 shared peak interval, 1 extra peak on config B | `PARTIALLY_SHARED_PEAKS` | **PASSED** |
-| `test_peak_profile_disjoint` | Non-overlapping genomic intervals | `DISTINCT_PEAKS` | **PASSED** |
-| `test_peak_profile_differing_counts` | Single peak vs 2 peaks | `DIFFERING_PEAK_COUNTS` | **PASSED** |
-| `test_peak_profile_overlapping_offset` | Overlapping intervals with 100 bp boundary shift | `OVERLAPPING_PEAKS_OFFSET` | **PASSED** |
-| `test_peak_profile_missing_details` | Positive status but missing physical peak coordinates | `INCOMPARABLE` | **PASSED** |
-| `test_peak_profile_incompatible_assembly`| GRCh38 config vs hg19 config | `INCOMPARABLE` | **PASSED** |
-| `test_peak_profile_different_target_tfs` | E2F1 config vs MYC config | `INCOMPARABLE` | **PASSED** |
-| `test_peak_profile_concordant_negative` | Both configurations negative (no peaks) | `NO_PEAKS` | **PASSED** |
+| `test_aggregate_set_mixed_comparable_and_incomparable` | Task 2: Mixed set with identical and missing-coord pairs | `peak_profile_concordant is None`, `peak_profile_evaluable is False`, `peak_profile_concordance_status == "SOME_INCOMPARABLE"`, `overall_status != "ROBUST_POSITIVE_EVIDENCE"` | **PASSED** |
+| `test_aggregate_set_differing_and_incomparable` | Task 2: Mixed set with differing peaks and missing-coord pairs | `peak_profile_concordance_status == "PROFILES_DIFFER"`, `peak_profile_concordant is False` | **PASSED** |
+| `test_different_peaks_same_experiment_and_file` | Task 3 Case 1: Different peaks on identical exp and file | `PEAK_PROCESSING_DEPENDENT not in diag.primary_causes`, `diag.peak_profile_concordance == "DIFFERING_PEAK_COUNTS"`, `diag.interpretive_uncertainty is not None` | **PASSED** |
+| `test_different_peaks_verified_different_processing_files` | Task 3 Case 2: Different peaks with verified different processing files | `PEAK_PROCESSING_DEPENDENT in diag.primary_causes` | **PASSED** |
+| `test_different_peaks_different_experiments` | Task 3 Case 3: Different peaks from different experiments | `EXPERIMENT_DISCORDANT in diag.primary_causes`, `PEAK_PROCESSING_DEPENDENT not in diag.primary_causes` | **PASSED** |
+| `test_peak_profiles_without_sufficient_coordinate_information` | Task 3 Case 4: Peak profiles without coordinate info | `diag.peak_profile_concordance == "INCOMPARABLE"`, `PEAK_PROCESSING_DEPENDENT not in diag.primary_causes` | **PASSED** |
+
+### 4.3 Clean-Wheel Verification Outside Repository
+1. **Wheel Build:** Built wheel `tf_explorer-3.1.0rc2.dev0-py3-none-any.whl` from source branch.
+2. **Clean Installation:** Reinstalled in isolated environment `C:\Users\rashi\AppData\Local\Temp\tf_patched_wheel_venv` with `--force-reinstall --no-deps`.
+3. **Execution Outside Workspace:** Pytest executed from `C:\Users\rashi\AppData\Local\Temp`:
+   - `test_diagnostic_engine_regression.py`: **12 / 12 PASSED**
+   - `test_aggregate_and_peak_regression.py`: **23 / 23 PASSED**
+   - **Combined Clean Wheel Rate: 35 / 35 PASSED (100%)**
 
 ---
 
-## 4. Evaluation of Classification Semantics
-
-The investigation revealed that `v3.1.0rc1` conflated three distinct concepts under `STABLE_WITHIN_EVALUATED_CHOICES`:
-1. **Binary Detection Status:** Did both assays detect transcription factor binding?
-2. **Complete Configuration Agreement:** Did both assays evaluate the exact same parameters?
-3. **Primary Diagnostic Classification:** What was the causal mechanism of any observed difference?
-
-### 4.1 Resolution and Semantic Decoupling
-On branch `fix/joss-diagnostic-engine-refactor`, these three concepts are strictly decoupled across dedicated data attributes:
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                   SEPARATION OF CONCORDANCE SEMANTICS                  │
-├───────────────────────────────┬────────────────────────────────────────┤
-│ Semantic Concept              │ Dedicated Field & Type                 │
-├───────────────────────────────┼────────────────────────────────────────┤
-│ 1. Binary Detection Status    │ detection_status_concordance: str      │
-│                               │ ("BOTH_POSITIVE", "BOTH_NEGATIVE",     │
-│                               │  "DISCORDANT", "UNVERIFIED")           │
-├───────────────────────────────┼────────────────────────────────────────┤
-│ 2. Configuration Agreement    │ configuration_concordance: bool        │
-│                               │ (True iff TSS, window, cell line,      │
-│                               │  treatment, modification, tier match)  │
-├───────────────────────────────┼────────────────────────────────────────┤
-│ 3. Physical Peak Geometry     │ peak_profile_concordance: str          │
-│                               │ ("IDENTICAL_PEAKS", "DISTINCT_PEAKS",  │
-│                               │  "PARTIALLY_SHARED_PEAKS", etc.)       │
-├───────────────────────────────┼────────────────────────────────────────┤
-│ 4. Diagnostic Classification  │ primary_causes: List[Enum]             │
-│                               │ (Lists actual causes of divergence;    │
-│                               │  contains STABLE iff all match)        │
-└───────────────────────────────┴────────────────────────────────────────┘
-```
-
-This ensures `STABLE_WITHIN_EVALUATED_CHOICES` is emitted as a primary cause **if and only if** both detection status and all evaluated analytical parameters are concordant.
-
----
-
-## 5. Reconciliation of Pilot Benchmark Denominator
-
-### 5.1 Reconciliation of 20 Planned vs. 19 Evaluated Comparisons
-The pilot benchmark protocol specified:
-- 14 original positive/exploratory scenarios (`SCEN-01` through `SCEN-14`).
-- 6 negative control scenarios (`NEG-A` through `NEG-F`).
-- **Total Planned:** 20 comparisons.
-
-The benchmark execution recorded **19 evaluated comparisons**. The reconciliation is as follows:
-- **Scenario Audit:** `SCEN-06` and `SCEN-13` in the original pilot protocol were defined with identical parameters:
-  - Both evaluated *MYC* (chromosome 8) for TF target `ESR1` at promoter `chr8:127734433-127736933` (Standard `[-2000, 500]`) versus `chr8:127734433-127736433` (Upstream `[-2000, 0]`) using authentic ENCODE experiment `ENCSR463GOT` / file `ENCFF185UUT` in `MCF-7` cells.
-  - In the pilot runner, `SCEN-06` and `SCEN-13` evaluated the exact same comparison pair. This was an accidental **pseudoreplication** in the scenario index (13 unique positive comparisons + 6 negative controls = 19 unique evaluated comparisons).
-- **Documentation Transcription Erratum:** An earlier draft of this report inadvertently listed `ENCSR000DOE` (a K562 GTF2B assay) and TF target `MAX` in narrative summary text for SCEN-06/13. Forensic inspection of `run_benchmark_pilot_original.py` (lines 353–363), benchmark result CSVs, and cryptographic provenance records confirmed that the software was actually passed `ENCSR463GOT` (eGFP-ESR1 ChIP-seq in MCF-7) with `ENCFF185UUT`. The authentication contract was strictly enforced against the authoritative DCC store and never saw the mismatched accession.
-- **NEG-D Resolution:** `NEG-D` compared an authentic biological observation against a synthetic mock. Naive bedtools treats synthetic and authentic BED files identically (pure geometry). TF-Explorer enforces an explicit security boundary: unauthenticated or synthetic data paired with authentic data triggers fail-closed `INSUFFICIENT_COMPARABLE_DATA`. This is an intended security guarantee, not a defect.
-- **NEG-E Resolution:** In baseline `v3.1.0rc1`, `NEG-E` (identical parameters with conflicting status assertions) fell back to `EXPERIMENT_DISCORDANT`. The patch detects this internal data contradiction and fails closed as `INSUFFICIENT_COMPARABLE_DATA`.
-
-### 5.2 Complete 19-Scenario Mapping and Disposition Table
-
-| ID | Gene | TF | Tested Dimension | Evidence Type | v3.1.0rc1 Baseline | Patched TF-Explorer | Comparator | Pilot Disposition |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **SCEN-01** | CDK4 | E2F1 | Identical parameters | Authenticated Biological | `STABLE` | `STABLE` | Concordant Positive | Exact Agreement |
-| **SCEN-02** | CCND1 | ESR1 | Promoter window shift | Authenticated Biological | `PROMOTER_WINDOW_DEPENDENT` | `PROMOTER_WINDOW_DEPENDENT` | Window Concordant | Exact Agreement |
-| **SCEN-03** | TP53 | RELA | Biological cell line | Authenticated Biological | `BIOLOGICAL_CONTEXT_DISCORDANCE` | `BIOLOGICAL_CONTEXT_DISCORDANCE` | Discordant Calls | Exact Agreement |
-| **SCEN-04** | ACTB | POLR2A | Signed strand coords | Authenticated Biological | `STABLE` | `STABLE` | Exact BED0 Match | Exact Agreement |
-| **SCEN-05** | EGFR | STAT3 | Multi-peak vs single | Authenticated Biological | `PEAK_MULTIPLICITY_SHIFT` | `PEAK_MULTIPLICITY_SHIFT` | Peak Count Shift | Exact Agreement |
-| **SCEN-06** | MYC | ESR1 | Promoter window shift | Authenticated Biological | `STABLE` *(Limitation)* | `PROMOTER_WINDOW_DEPENDENT` | Window Shift | Resolved (Limitation-01) |
-| **SCEN-07** | BRCA1 | JUN | Replicate experiment | Authenticated Biological | `EXPERIMENT_DISCORDANT` | `EXPERIMENT_DISCORDANT` | Assay Discordance | Exact Agreement |
-| **SCEN-08** | PTEN | FOXO3 | Negative control | Authenticated Biological | `STABLE` (no peaks) | `STABLE` (no peaks) | Concordant Negative | Exact Agreement |
-| **SCEN-09** | CDKN1A | TP53 | Treatment context | Authenticated Biological | `BIOLOGICAL_CONTEXT_DISCORDANCE` | `BIOLOGICAL_CONTEXT_DISCORDANCE` | Treatment Shift | Exact Agreement |
-| **SCEN-10** | RB1 | E2F4 | Transcript TSS shift | Authenticated Biological | `TRANSCRIPT_TSS_DEPENDENT` | `TRANSCRIPT_TSS_DEPENDENT` | Coordinate Shift | Exact Agreement |
-| **SCEN-11** | MDM2 | TP53 | Replicate experiment | Authenticated Biological | `EXPERIMENT_DISCORDANT` | `EXPERIMENT_DISCORDANT` | Assay Discordance | Exact Agreement |
-| **SCEN-12** | VEGFA | HIF1A | Processing pipeline | Authenticated Biological | `PROCESSING_TIER_DISCORDANT` | `PROCESSING_TIER_DISCORDANT` | Pipeline Shift | Exact Agreement |
-| **SCEN-13** | MYC | ESR1 | Duplicate of SCEN-06 | Duplicate Input Pair | `STABLE` *(Limitation)* | `PROMOTER_WINDOW_DEPENDENT` | Window Shift | Pseudoreplication of 06 |
-| **SCEN-14** | TFF1 | ESR1 | Cryptographic tamper | Controlled Fixture (Tampered) | `INSUFFICIENT_DATA` | `INSUFFICIENT_DATA` | Byte Mismatch | Fail-Closed Security |
-| **NEG-A** | GATA3 | GATA3 | Unmodified cell lines | Authenticated Biological (Neg) | `STABLE` (both neg) | `STABLE` (both neg) | Concordant Negative | Exact Agreement |
-| **NEG-B** | ESR1 | ESR1 | Diff window on neg | Authenticated Biological (Neg) | `STABLE` *(Limitation)* | `PROMOTER_WINDOW_DEPENDENT` | Window Difference | Resolved (Limitation-01) |
-| **NEG-C** | FOXA1 | FOXA1 | Diff context on neg | Authenticated Biological (Neg) | `STABLE` *(Limitation)* | `BIOLOGICAL_CONTEXT_DISCORDANCE` | Context Difference | Resolved (Limitation-01) |
-| **NEG-D** | CTCF | CTCF | Synth vs auth guard | Synthetic vs Auth Fixture | `INSUFFICIENT_DATA` | `INSUFFICIENT_DATA` | Unchecked (bedtools) | Fail-Closed Security |
-| **NEG-E** | CDK4 | E2F1 | Internal contradiction | Synthetic Contradiction Fixture | `EXPERIMENT_DISCORDANT` *(Defect)* | `INSUFFICIENT_DATA` | Ambiguous / Invalid | Resolved (Defect-01) |
-| **NEG-F** | GAPDH | MYC | Identical neg params | Authenticated Biological (Neg) | `STABLE` (both neg) | `STABLE` (both neg) | Concordant Negative | Exact Agreement |
-
-### 5.3 Categorical Breakdown of Benchmark Denominator
-- **Total Executed Scenario Records:** 19 scenario rows in runner.
-- **Unique Input Comparisons:** 18 unique pairwise configurations (SCEN-06 and SCEN-13 evaluate the identical MYC ESR1 pair).
-- **Duplicate Input Pairs:** 1 pair (SCEN-13 is a duplicate of SCEN-06, retained for diagnostic question continuity).
-- **Authenticated Biological Examples:** 15 comparisons (SCEN-01–06, SCEN-07–12, NEG-A–C, NEG-F).
-- **Synthetic or Controlled Security Fixtures:** 3 comparisons (SCEN-14 tampered bytes, NEG-D synthetic vs authentic, NEG-E internal contradiction).
-- **Fail-Closed Security Outcomes:** 3 comparisons correctly fail closed as `INSUFFICIENT_COMPARABLE_DATA` (SCEN-14, NEG-D, NEG-E).
-- **Implementation Defects:** 0 remaining.
-- **Design Limitations:** 0 remaining.
-
-**Summary Metrics:**
-- **Exact Agreements:** 18 / 19 (94.7%)
-- **Intentional Security Boundary:** 1 / 19 (5.3%, NEG-D authenticated vs synthetic fail-closed)
-- **Implementation Defects:** 0 (0.0%)
-- **Design Limitations:** 0 (0.0%)
-
----
-
-## 6. Source vs. Installed-Wheel Independent Verification
-
-To guarantee that the fixes do not rely on local repository side-effects, tests were executed against installed packages across independent virtual environments.
-
-### 6.1 Baseline Wheel Verification (`v3.1.0rc1`)
-- **Environment:** `C:\Users\rashi\AppData\Local\Temp\tf_clean_repro_test\clean_venv`
-- **Installed Version:** `tf-explorer 3.1.0rc1` (from official release wheel `tf_explorer-3.1.0rc1-py3-none-any.whl`, commit `58f84a52e796a39fcc92dd36d43e524bb775e4eb`)
-- **Resolved Module Path:** `C:\Users\rashi\AppData\Local\Temp\tf_clean_repro_test\clean_venv\Lib\site-packages\tf_explorer\__init__.py`
-- **Evaluation:** Executing the NEG-E test in this baseline environment confirmed the defect:
-  ```
-  Primary Causes: ['EXPERIMENT_DISCORDANT']  <-- Defect reproduced in baseline wheel
-  ```
-
-### 6.2 Patched Candidate Wheel Build and Installation
-- **Candidate Version:** `3.1.0rc2.dev0` (distinguishable from public `v3.1.0rc1`)
-- **Build Invocation:** `pip wheel . -w C:\Users\rashi\AppData\Local\Temp\tf_wheel_build --no-deps`
-- **Generated Wheel:** `C:\Users\rashi\AppData\Local\Temp\tf_wheel_build\tf_explorer-3.1.0rc2.dev0-py3-none-any.whl`
-- **File Size:** `195,972 bytes`
-- **SHA-256 Checksum:** `a7702f5a6fef95b71dbec6ba74f0c4bb21a99538ae2b81d77a8bcf44776e0a96`
-- **Target Isolated Venv:** `C:\Users\rashi\AppData\Local\Temp\tf_patched_wheel_venv` (Python 3.12.4)
-- **Installation:** Clean installation with `--force-reinstall --no-deps`
-- **Verified Module Import Path (outside repo):**
-  `C:\Users\rashi\AppData\Local\Temp\tf_patched_wheel_venv\Lib\site-packages\tf_explorer\__init__.py` (Version: `3.1.0rc2.dev0`)
-
-### 6.3 Isolated Environment Test Execution
-Tests were executed strictly from `C:\Users\rashi\AppData\Local\Temp` using `tf_patched_wheel_venv\Scripts\pytest.exe`:
-- `test_diagnostic_engine_regression.py` (12 tests): **12 / 12 PASSED**
-- `test_aggregate_and_peak_regression.py` (17 tests): **17 / 17 PASSED**
-- **Clean Wheel Pass Rate: 29 / 29 PASSED (100%)**
-
----
-
-## 7. API and Serialization Compatibility
-
-### 7.1 Public Function and Class Signatures
-- `DisagreementEngine.evaluate_pair(config_a, config_b)`: Returns `DisagreementDiagnosis`.
-- `DisagreementEngine.evaluate_set(configurations)`: Returns `Dict[str, Any]` containing all legacy keys plus additive multi-dimensional metrics.
-- `classify_peak_profile_concordance(config_a, config_b, is_both_pos, is_both_neg)`: Pure string classifier.
-
-### 7.2 Dataclass Schema and JSON Serialization
-`DisagreementDiagnosis.to_dict()` and `DisagreementMatrix.to_json()` were verified using standard `json.dumps()`:
-```python
-# Keys confirmed in serialized output:
-[
-  "primary_causes", "config_a_id", "config_b_id", "evidence_a", "evidence_b",
-  "differing_dimensions", "smallest_observed_difference", "scientific_explanation",
-  "causal_attribution_caveat", "has_multiple_covarying_dimensions",
-  "is_multivariate_interaction", "covarying_dimensions", "interacting_factors",
-  "has_synthetic_configuration", "detection_status_concordance",
-  "configuration_concordance", "peak_profile_concordance", "interpretive_uncertainty"
-]
-```
-All fields serialize to native JSON primitives without custom encoders.
-
-### 7.3 Downstream Interface Verification
-- **`DisagreementMatrix.analyze()`**: Seamlessly ingests new `evaluate_set()` output.
-- **`DisagreementMatrix.get_summary_statistics()`**: Accurately reports positive, negative, excluded counts, and `overall_status`.
-- **`DisagreementMatrix.to_dataframe()`**: Generates complete tabular DataFrame.
-- **`DisagreementMatrix.to_markdown()`**: Renders GitHub Flavored Markdown tables and callouts without rendering errors.
-- **CLI Failure Handling (`tests/test_cli_failure_handling.py`)**: Verified 5 / 5 tests passing with standard nonzero exit codes on failures and zero on successes.
-
----
-
-## 8. Remaining Limitations and Scope Boundary Disclosure
-
-In accordance with strict scientific disclosure rules:
-1. **Single-Cell ChIP-seq Unhandled:** TF-Explorer evaluates bulk ChIP-seq, CUT&RUN, and ATAC-seq peak data. Single-cell sparse peak distributions are not currently modeled.
-2. **Genome Assembly Requirement:** Physical peak comparability requires GRCh38 coordinates. Non-GRCh38 inputs must be lifted over prior to submission.
-3. **Complex Structural Translocations:** Regulatory intervals assume contiguous genomic coordinates around canonical TSS definitions; distal translocations require manual window bounding.
-4. **Blinded File Integrity:** The prospective evaluation file `PHASE4C1_FROZEN_COMPARISON_PAIRS.json` was kept strictly unopened and unread throughout all investigations.
-5. **No Unauthorized Release:** The published `v3.1.0rc1` wheel, git remote, and release tags remain unmodified.
-
----
-
-## 9. Overall Regression Test Results
-
-```
-================================================================================
-TF-EXPLORER REGRESSION AND INTEGRITY SUITE SUMMARY
-================================================================================
-1. Isolated Patched Wheel Venv (from C:\Users\rashi\AppData\Local\Temp):
-   - tests/test_diagnostic_engine_regression.py:  12 / 12 PASSED (100%)
-   - tests/test_aggregate_and_peak_regression.py: 17 / 17 PASSED (100%)
-   - Clean Wheel Subtotal:                       29 / 29 PASSED (100%)
-
-2. Core Automated Codebase Suite (Active Tracked Tests + Regressions):
-   - 158 / 158 PASSED in 64.40s (100%)
-   - 0 Failures, 0 Errors, 0 Regressions
-
-================================================================================
-RELEASE CANDIDATE DECISION: READY_FOR_RELEASE_CANDIDATE_CI
-================================================================================
-```
-
----
-
-## 10. Formal Release-Candidate Decision
-
-**DECISION:** **`READY_FOR_RELEASE_CANDIDATE_CI`**
-
-The Cause-of-Disagreement Engine refactoring on local branch `fix/joss-diagnostic-engine-refactor` has successfully passed the Release-Candidate Integrity Gate. All reported shortcomings from the pilot benchmark have been definitively corrected, pairwise-to-aggregate consistency is guaranteed, and clean-wheel isolated testing has verified full portability.
-
-The software is now ready for authorized integration, tag creation (e.g., `v3.1.0rc2`), and subsequent prospective evaluation.
+## 5. Summary of CI Execution Reporting
+In accordance with Task 4 reporting standards:
+- **Tests Passed in Remote CI (Run 40198671029, commit `c9af55e`):** 148 tests passed across 9 matrix jobs (Ubuntu, macOS, Windows on Python 3.10, 3.11, 3.12).
+- **Tests Skipped in Remote CI:** 16 tests skipped cleanly via `require_bed_file()` guard due to intentional non-inclusion of multi-gigabyte `encode_cache/` in git repository.
+- **Authentic Tests Run Locally:** 164 tracked tests passed locally in active development environment with full caching enabled.
+- **Tests Not Performed:** Zero tests bypassed. Prospective benchmark pairs (`PHASE4C1_FROZEN_COMPARISON_PAIRS.json`) remain strictly blinded and unaccessed.
