@@ -2,7 +2,7 @@
 TF-Explorer: Epigenetic Promoter Scanner & Regulatory Disagreement Engine.
 """
 
-__version__ = "3.1.0rc1"
+__version__ = "3.1.0rc2.dev0"
 
 # Core public API exports
 from tf_explorer.analysis import calculate_promoter_coordinates

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tf-explorer"
-version = "3.1.0rc1"
+version = "3.1.0rc2.dev0"
 description = "Epigenetic Promoter Scanner & Regulatory Disagreement Engine for Human Transcription Factors."
 authors = [
   { name="Rashid M.", email="rashidmstar@pondiuni.ac.in" },
