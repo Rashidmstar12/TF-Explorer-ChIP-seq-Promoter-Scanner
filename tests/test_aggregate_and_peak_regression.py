@@ -30,6 +30,12 @@ B_ENCFF004 = CACHE_DIR / "ENCFF004ZKN.bed.gz"
 B_ENCFF185 = CACHE_DIR / "ENCFF185UUT.bed.gz"
 
 
+def require_bed_file(*paths: Path):
+    for p in paths:
+        if not p.is_file():
+            pytest.skip(f"Authentic primary BED file '{p.name}' not found on local disk; skipped in offline CI environment.")
+
+
 @pytest.fixture
 def engine():
     return DisagreementEngine()
@@ -50,6 +56,7 @@ def test_case_a_differing_promoter_windows(engine, auth):
     Verifies that evaluate_set() retains the PROMOTER_WINDOW_DEPENDENT diagnosis
     and does not silently discard it.
     """
+    require_bed_file(B_ENCFF115)
     cfg_a = build_validated_configuration(
         gene_symbol="CDK4", transcript_id="ENST00000257904.11", canonical_tss=57752310, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
@@ -88,6 +95,7 @@ def test_case_b_differing_physical_peaks(engine, auth):
     Case B: Two positive configurations with different physical peak identities.
     (MYC ESR1 in MCF-7: Standard window captures 2 peaks, Distal captures 1 peak).
     """
+    require_bed_file(B_ENCFF185)
     cfg_a = build_validated_configuration(
         gene_symbol="MYC", transcript_id="ENST00000621592.8", canonical_tss=127736231, strand="+",
         tf_target="ESR1", encode_experiment_accession="ENCSR463GOT", encode_file_accession="ENCFF185UUT",
@@ -120,6 +128,7 @@ def test_case_c_differing_biosamples(engine, auth):
     """
     Case C: Two positive configurations from different biosamples (MCF-7 vs HeLa-S3).
     """
+    require_bed_file(B_ENCFF115, B_ENCFF004)
     cfg_a = build_validated_configuration(
         gene_symbol="CDK4", transcript_id="ENST00000257904.11", canonical_tss=57752310, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
@@ -152,6 +161,7 @@ def test_case_d_mixed_positive_and_negative(engine, auth):
     """
     Case D: Three configurations with mixed positive, positive, and negative observations.
     """
+    require_bed_file(B_ENCFF115, B_ENCFF004)
     cfg_pos1 = build_validated_configuration(
         gene_symbol="TFF1", transcript_id="ENST00000291527.3", canonical_tss=42366535, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
@@ -188,6 +198,7 @@ def test_case_e_distinct_negative_contexts(engine, auth):
     Case E: Two negative configurations from distinct experimental contexts.
     Verifies that concordant negative is flagged with explicit caveats against claiming non-inactivity.
     """
+    require_bed_file(B_ENCFF004)
     cfg_neg1 = build_validated_configuration(
         gene_symbol="TFF1", transcript_id="ENST00000291527.3", canonical_tss=42366535, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EVM", encode_file_accession="ENCFF004ZKN",
@@ -222,6 +233,7 @@ def test_case_f_authenticated_and_synthetic(engine, auth):
     Synthetic configuration must be excluded from valid count fail-closed,
     and pairwise diagnosis must report INSUFFICIENT_COMPARABLE_DATA.
     """
+    require_bed_file(B_ENCFF115)
     cfg_auth = build_validated_configuration(
         gene_symbol="CDK4", transcript_id="ENST00000257904.11", canonical_tss=57752310, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
@@ -251,6 +263,7 @@ def test_case_g_multiple_simultaneous_differences(engine, auth):
     """
     Case G: Multiple simultaneous analytical differences (biosample + window).
     """
+    require_bed_file(B_ENCFF115, B_ENCFF004)
     cfg_a = build_validated_configuration(
         gene_symbol="TFF1", transcript_id="ENST00000291527.3", canonical_tss=42366535, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",

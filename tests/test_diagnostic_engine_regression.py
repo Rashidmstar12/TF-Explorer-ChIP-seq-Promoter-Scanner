@@ -41,6 +41,12 @@ from tf_explorer.disagreement_factory import (
 CACHE_DIR = (Path(__file__).resolve().parent.parent / "encode_cache").resolve()
 
 
+def require_bed_file(*paths: Path):
+    for p in paths:
+        if not p.is_file():
+            pytest.skip(f"Authentic primary BED file '{p.name}' not found on local disk; skipped in offline CI environment.")
+
+
 @pytest.fixture
 def engine():
     return DisagreementEngine()
@@ -99,6 +105,7 @@ def test_reg02_synthetic_positive_vs_synthetic_negative_differing_window(engine)
 def test_reg03_synthetic_vs_authenticated_observation(engine, auth):
     """REG-03: Comparing synthetic mock against authentic observation must fail closed as INSUFFICIENT_COMPARABLE_DATA."""
     b_encff115 = (CACHE_DIR / "ENCFF115KRO.bed.gz").resolve()
+    require_bed_file(b_encff115)
     cfg_auth = build_validated_configuration(
         gene_symbol="CDK4", transcript_id="ENST00000257904.11", canonical_tss=57752310, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
@@ -121,6 +128,7 @@ def test_reg03_synthetic_vs_authenticated_observation(engine, auth):
 def test_reg04_unverified_vs_authenticated_observation(engine, auth):
     """REG-04: Comparing unverified observation against authenticated observation must fail closed."""
     b_encff115 = (CACHE_DIR / "ENCFF115KRO.bed.gz").resolve()
+    require_bed_file(b_encff115)
     cfg_auth = build_validated_configuration(
         gene_symbol="CDK4", transcript_id="ENST00000257904.11", canonical_tss=57752310, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
@@ -141,6 +149,7 @@ def test_reg04_unverified_vs_authenticated_observation(engine, auth):
 def test_reg05_invalid_provenance_token_binding(engine, auth):
     """REG-05: Replaying a CDK4 token on a MYC configuration must fail closed."""
     b_encff115 = (CACHE_DIR / "ENCFF115KRO.bed.gz").resolve()
+    require_bed_file(b_encff115)
     cfg_cdk4 = build_validated_configuration(
         gene_symbol="CDK4", transcript_id="ENST00000257904.11", canonical_tss=57752310, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
@@ -163,6 +172,7 @@ def test_reg05_invalid_provenance_token_binding(engine, auth):
 def test_reg06_source_file_mutation(engine, auth, tmp_path):
     """REG-06: Altering bytes in the BED file must fail closed on SHA-256 mismatch."""
     b_encff115 = (CACHE_DIR / "ENCFF115KRO.bed.gz").resolve()
+    require_bed_file(b_encff115)
     corrupt_bed = tmp_path / "ENCFF115KRO_mutated.bed.gz"
     shutil.copyfile(b_encff115, corrupt_bed)
     with open(corrupt_bed, "r+b") as f:
@@ -186,6 +196,7 @@ def test_reg06_source_file_mutation(engine, auth, tmp_path):
 def test_reg07_valid_authenticated_concordant_positive_identical(engine, auth):
     """REG-07: Valid authenticated comparison with identical configuration yields concordant positive with configuration concordance."""
     b_encff115 = (CACHE_DIR / "ENCFF115KRO.bed.gz").resolve()
+    require_bed_file(b_encff115)
     cfg_a = build_validated_configuration(
         gene_symbol="CDK4", transcript_id="ENST00000257904.11", canonical_tss=57752310, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
@@ -202,6 +213,7 @@ def test_reg07_valid_authenticated_concordant_positive_identical(engine, auth):
 def test_reg08_valid_authenticated_concordant_positive_multi_peak_shift(engine, auth):
     """REG-08: MYC Standard (2 peaks) vs Distal (1 peak) correctly preserves detection concordance while diagnosing PROMOTER_WINDOW_DEPENDENT and differing peak profiles!"""
     b_encff185 = (CACHE_DIR / "ENCFF185UUT.bed.gz").resolve()
+    require_bed_file(b_encff185)
     cfg_std = build_validated_configuration(
         gene_symbol="MYC", transcript_id="ENST00000621592.8", canonical_tss=127736231, strand="+",
         tf_target="ESR1", encode_experiment_accession="ENCSR463GOT", encode_file_accession="ENCFF185UUT",
@@ -224,6 +236,7 @@ def test_reg08_valid_authenticated_concordant_positive_multi_peak_shift(engine, 
 def test_reg09_valid_authenticated_concordant_positive_window_shift(engine, auth):
     """REG-09: CDK4 Standard [-2000, 500] vs Shifted [-1000, 200] (NEG-B) must report PROMOTER_WINDOW_DEPENDENT."""
     b_encff115 = (CACHE_DIR / "ENCFF115KRO.bed.gz").resolve()
+    require_bed_file(b_encff115)
     cfg_a = build_validated_configuration(
         gene_symbol="CDK4", transcript_id="ENST00000257904.11", canonical_tss=57752310, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
@@ -246,6 +259,7 @@ def test_reg10_valid_authenticated_concordant_positive_biosample_shift(engine, a
     """REG-10: CDK4 E2F1 in MCF-7 vs HeLa-S3 (NEG-C) must report BIOLOGICAL_CONTEXT_DIFFERENT."""
     b_encff115 = (CACHE_DIR / "ENCFF115KRO.bed.gz").resolve()
     b_encff004 = (CACHE_DIR / "ENCFF004ZKN.bed.gz").resolve()
+    require_bed_file(b_encff115, b_encff004)
     cfg_a = build_validated_configuration(
         gene_symbol="CDK4", transcript_id="ENST00000257904.11", canonical_tss=57752310, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EWX", encode_file_accession="ENCFF115KRO",
@@ -268,6 +282,7 @@ def test_reg11_valid_authenticated_replicate_experiment_discordance(engine, auth
     """REG-11: PKM Distal CREB1 replicates (SCEN-14) must report EXPERIMENT_DISCORDANT."""
     b_encff142 = (CACHE_DIR / "ENCFF142BHB.bed.gz").resolve()
     b_encff030 = (CACHE_DIR / "ENCFF030DLI.bed.gz").resolve()
+    require_bed_file(b_encff142, b_encff030)
     cfg_a = build_validated_configuration(
         gene_symbol="PKM", transcript_id="ENST00000335181.10", canonical_tss=72231190, strand="-",
         tf_target="CREB1", encode_experiment_accession="ENCSR620DUQ", encode_file_accession="ENCFF142BHB",
@@ -289,6 +304,7 @@ def test_reg11_valid_authenticated_replicate_experiment_discordance(engine, auth
 def test_reg12_valid_authenticated_concordant_negative(engine, auth):
     """REG-12: TFF1 with E2F1 in HeLa-S3 Distal vs Core (both negative) yields concordant non-detection with appropriate disclaimer."""
     b_encff004 = (CACHE_DIR / "ENCFF004ZKN.bed.gz").resolve()
+    require_bed_file(b_encff004)
     cfg_a = build_validated_configuration(
         gene_symbol="TFF1", transcript_id="ENST00000291527.3", canonical_tss=42366535, strand="-",
         tf_target="E2F1", encode_experiment_accession="ENCSR000EVM", encode_file_accession="ENCFF004ZKN",
