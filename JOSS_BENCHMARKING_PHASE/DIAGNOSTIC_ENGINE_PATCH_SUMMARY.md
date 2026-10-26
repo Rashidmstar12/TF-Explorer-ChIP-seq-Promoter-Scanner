@@ -71,16 +71,33 @@ In `evaluate_set()`, peak profile concordance across configurations is classifie
 
 ---
 
-## 4. Test Suite and Clean-Wheel Verification
+## 4. Scientific Semantic Corrections Before PR #3 Merge
 
-1. **Tracked Core Test Suite:** **164 / 164 PASSED (100%)**
+### 4.1 Singleton Positive Evidence and Cross-Experiment Evaluation (Concern 1)
+- **Singleton Positive Classification:** When $N=1$ verified positive configuration is evaluated in `evaluate_set()`, the engine assigns `overall_status = "SINGLE_POSITIVE_OBSERVATION"`, `peak_profile_concordance_status = "SINGLE_OBSERVATION"`, `peak_profile_evaluable = False`, and `peak_profile_concordant = None`. It never claims cross-configuration concordance that was never evaluated.
+- **Singleton Negative Classification:** When $N=1$ verified negative configuration is evaluated, the engine assigns `overall_status = "SINGLE_NEGATIVE_OBSERVATION"`, `peak_profile_concordance_status = "NO_PEAKS"`, `peak_profile_evaluable = False`, and `peak_profile_concordant = True`.
+- **Strict Cross-Experiment Robustness:** `ROBUST_POSITIVE_EVIDENCE` is emitted strictly when $N \ge 2$, `unique_experiments_count >= 2`, analytical parameters match, and physical peak profiles are identical. When $N \ge 2$ configurations derive from a single experiment (`unique_experiments_count == 1`), `CONSISTENT_SINGLE_EXPERIMENT_POSITIVE` is emitted.
+
+### 4.2 Fail-Closed Synthetic Fixture Exclusion (Concern 2)
+- **Production Fail-Closed Contract (`allow_synthetic_fixtures=False`):** Under default settings, any pair containing synthetic or manual test data fails closed immediately (`INSUFFICIENT_COMPARABLE_DATA`, `detection_status_concordance="UNVERIFIED"`, `configuration_concordance=False`, `peak_profile_concordance="INCOMPARABLE"`). Synthetic fixtures can NEVER establish authenticated biological concordance OR discordance.
+- **Fixture Mode Contract (`allow_synthetic_fixtures=True`):** Analytical parameter sensitivity dissection is permitted on simulated test fixtures, but strictly flags `has_synthetic_configuration=True` and appends `SYNTHETIC_TEST_FIXTURE` caveats noting simulated test data.
+
+### 4.3 Incomparable Pairwise Traceability in Aggregate Sets (Concern 3)
+- **Traceability Preservation:** When an aggregate set contains an incomparable pair (e.g. missing coordinates), `evaluate_set()` retains the pairwise diagnosis in `res["diagnoses"]` (with `peak_profile_concordance="INCOMPARABLE"` and `interpretive_uncertainty`). `diagnoses` is NEVER empty when `peak_profile_concordance_status == "SOME_INCOMPARABLE"` or `has_unresolved_interpretation == True`.
+- **Cause Set Integrity:** Non-divergent incomparable pairs do not inject spurious causes into `res["observed_causes"]`.
+
+---
+
+## 5. Test Suite and Clean-Wheel Verification
+
+1. **Tracked Core Test Suite:** **178 / 178 PASSED (100%)**
 2. **Dedicated Regression Tests:**
    - `test_diagnostic_engine_regression.py`: **12 / 12 PASSED**
-   - `test_aggregate_and_peak_regression.py`: **23 / 23 PASSED** (includes 6 new dedicated tests for Tasks 2 and 3)
+   - `test_aggregate_and_peak_regression.py`: **37 / 37 PASSED** (includes 14 new dedicated tests for Concerns 1, 2, and 3)
 3. **Clean-Wheel Verification Outside Repository:**
    - Wheel: `tf_explorer-3.1.0rc2.dev0-py3-none-any.whl`
    - Target Environment: `tf_patched_wheel_venv` (outside repository root)
-   - Test Verdict: **35 / 35 PASSED (100%)**
+   - Test Verdict: **49 / 49 PASSED (100%)**
 4. **Remote CI Compatibility:**
-   - 9 / 9 matrix jobs passed on GitHub Actions (Run `40198671029`)
+   - 9 / 9 matrix jobs passed on GitHub Actions (Run `40203605754`)
    - Clean offline skipping via `require_bed_file()` preserves deterministic CI behavior without uncommitted multi-gigabyte cache dependencies.

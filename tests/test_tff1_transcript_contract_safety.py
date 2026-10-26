@@ -230,7 +230,7 @@ class TestTFF1TranscriptContractSafety:
         assert cfg_dist.is_verified_biological_observation() is False
 
         engine = DisagreementEngine()
-        diag = engine.evaluate_pair(cfg_std, cfg_dist)
+        diag = engine.evaluate_pair(cfg_std, cfg_dist, allow_synthetic_fixtures=True)
 
         assert diag.has_synthetic_configuration is True
         assert diag.primary_causes == [DisagreementClassification.PROMOTER_WINDOW_DEPENDENT]

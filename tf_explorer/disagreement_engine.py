@@ -107,15 +107,17 @@ class DisagreementEngine:
     Operates strictly fail-closed: unauthenticated sources are excluded from positive/negative consensus.
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, allow_synthetic_fixtures: bool = False):
+        self.allow_synthetic_fixtures = allow_synthetic_fixtures
 
     def evaluate_pair(
         self,
         config_a: EvidenceConfiguration,
         config_b: EvidenceConfiguration,
-        allow_synthetic_fixtures: bool = False
+        allow_synthetic_fixtures: Optional[bool] = None
     ) -> DisagreementDiagnosis:
+        if allow_synthetic_fixtures is None:
+            allow_synthetic_fixtures = self.allow_synthetic_fixtures
         """
         Diagnoses agreement or disagreement between two specific evidence configurations.
         Fails closed if either configuration is unauthenticated, corrupted, or contradictory.
@@ -303,8 +305,8 @@ class DisagreementEngine:
             )
 
         # 4. Check for Synthetic / Manual Configurations
-        # Synthetic configurations claiming concordant evidence cannot establish biological consensus.
-        if not allow_synthetic_fixtures and is_synthetic_pair and (config_a.evidence_status == config_b.evidence_status):
+        # Under production fail-closed policy, synthetic configurations can NEVER establish biological concordance OR discordance.
+        if not allow_synthetic_fixtures and is_synthetic_pair:
             causes.append(DisagreementClassification.INSUFFICIENT_COMPARABLE_DATA)
             differing_dimensions.append(DimensionType.DATA_AVAILABILITY)
             missing_info = []
@@ -321,7 +323,7 @@ class DisagreementEngine:
                 evidence_b=config_b.evidence_status,
                 differing_dimensions=differing_dimensions,
                 smallest_observed_difference=smallest_diff,
-                scientific_explanation="Synthetic or manually asserted test configurations cannot establish biological concordance. TF-Explorer fails closed on non-biological evidence.",
+                scientific_explanation="Synthetic or manually asserted test configurations cannot establish biological concordance or discordance. TF-Explorer fails closed on non-biological evidence.",
                 causal_attribution_caveat="Synthetic test configurations must never be interpreted as verified biological evidence.",
                 has_synthetic_configuration=True,
                 detection_status_concordance="UNVERIFIED",
@@ -393,9 +395,8 @@ class DisagreementEngine:
                 f"Independent experiments in identical context: {config_a.encode_experiment_accession} vs {config_b.encode_experiment_accession}"
             )
 
-        # Overall configuration concordance
-        configuration_concordance = not (
-            transcript_differs or window_differs or processing_differs or context_differs or exp_differs
+        analytical_config_concordant = not (
+            transcript_differs or window_differs or processing_differs or context_differs
         )
 
         # 6. Peak Profile & Detection Status Concordance
@@ -417,6 +418,14 @@ class DisagreementEngine:
             config_a, config_b, is_both_positive, is_both_negative
         )
 
+        # Overall configuration concordance
+        # Analytical parameters must match. When independent experiments share identical context,
+        # agreement requires concordant physical peak profiles.
+        if exp_differs and not context_differs:
+            configuration_concordance = analytical_config_concordant and is_status_concordant and (peak_profile_concordance in ("IDENTICAL_PEAKS", "NO_PEAKS"))
+        else:
+            configuration_concordance = analytical_config_concordant
+
         # 7. Formulate Classification, Explanations, and Caveats
         has_multiple_dims = len(differing_dimensions) > 1
         interpretive_uncertainty: Optional[str] = None
@@ -425,8 +434,15 @@ class DisagreementEngine:
             # If all parameters match and peaks match, observation is truly stable across evaluated choices:
             if configuration_concordance and peak_profile_concordance in ("IDENTICAL_PEAKS", "NO_PEAKS"):
                 causes.append(DisagreementClassification.STABLE_WITHIN_EVALUATED_CHOICES)
-                smallest_diff = "None (Concordant evidence status and identical parameters)"
-                explanation = f"Both configurations yield concordant {config_a.evidence_status.value}."
+                if exp_differs and not context_differs:
+                    smallest_diff = "None (Concordant evidence status and identical peak profile across independent experiments)"
+                    explanation = (
+                        f"Both configurations yield concordant {config_a.evidence_status.value} "
+                        f"replicated across independent experiments ({config_a.encode_experiment_accession} vs {config_b.encode_experiment_accession})."
+                    )
+                else:
+                    smallest_diff = "None (Concordant evidence status and identical parameters)"
+                    explanation = f"Both configurations yield concordant {config_a.evidence_status.value}."
                 if is_both_negative:
                     caveats.append(
                         "Concordant non-detection indicates no overlapping peak was called in the evaluated window. "
@@ -570,7 +586,7 @@ class DisagreementEngine:
 
         if is_synthetic_pair:
             caveats.append(
-                "Synthetic computational test fixture: demonstrates parameter sensitivity; not authenticated biological evidence."
+                "SYNTHETIC_TEST_FIXTURE: Analytical comparison on simulated test data; does not establish biological concordance or discordance."
             )
 
         caveat_str = " | ".join(caveats) if caveats else "Evidence reflects evaluated analytical parameter choices."
@@ -597,8 +613,10 @@ class DisagreementEngine:
     def evaluate_set(
         self,
         configurations: List[EvidenceConfiguration],
-        allow_synthetic_fixtures: bool = False
+        allow_synthetic_fixtures: Optional[bool] = None
     ) -> Dict[str, Any]:
+        if allow_synthetic_fixtures is None:
+            allow_synthetic_fixtures = self.allow_synthetic_fixtures
         """
         Evaluates a set of evidence configurations, performing all pairwise comparisons
         and synthesizing the global consensus and disagreement landscape.
@@ -696,8 +714,15 @@ class DisagreementEngine:
                 has_divergence = (
                     len(differing_causes) > 0
                     or not diag.configuration_concordance
-                    or diag.peak_profile_concordance in ("DISTINCT_PEAKS", "DIFFERING_PEAK_COUNTS", "PARTIALLY_SHARED_PEAKS", "OVERLAPPING_PEAKS_OFFSET")
-                    or diag.detection_status_concordance == "DISCORDANT"
+                    or diag.peak_profile_concordance in (
+                        "DISTINCT_PEAKS",
+                        "DIFFERING_PEAK_COUNTS",
+                        "PARTIALLY_SHARED_PEAKS",
+                        "OVERLAPPING_PEAKS_OFFSET",
+                        "INCOMPARABLE",
+                    )
+                    or diag.detection_status_concordance in ("DISCORDANT", "UNVERIFIED")
+                    or bool(diag.interpretive_uncertainty)
                 )
 
                 if has_divergence:
@@ -717,10 +742,22 @@ class DisagreementEngine:
             peak_profile_concordance_status = "EMPTY_SET"
             peak_profile_evaluable = False
             peak_profile_concordant = True
-        elif len(pos_configs) == 0 and len(neg_configs) > 0:
+        elif len(pos_configs) == 0 and len(neg_configs) == 0:
+            peak_profile_concordance_status = "SOME_INCOMPARABLE" if incomparable_peak_profile_count > 0 else "NO_PEAKS"
+            peak_profile_evaluable = False
+            peak_profile_concordant = None
+        elif len(pos_configs) == 0 and len(neg_configs) == 1:
             peak_profile_concordance_status = "NO_PEAKS"
             peak_profile_evaluable = False
             peak_profile_concordant = True
+        elif len(pos_configs) == 0 and len(neg_configs) > 1:
+            peak_profile_concordance_status = "NO_PEAKS"
+            peak_profile_evaluable = False
+            peak_profile_concordant = True
+        elif len(pos_configs) == 1 and len(neg_configs) == 0:
+            peak_profile_concordance_status = "SINGLE_OBSERVATION"
+            peak_profile_evaluable = False
+            peak_profile_concordant = None
         elif len(pos_configs) > 0:
             if differing_peak_profile_count > 0:
                 peak_profile_concordance_status = "PROFILES_DIFFER"
@@ -730,7 +767,7 @@ class DisagreementEngine:
                 peak_profile_concordance_status = "SOME_INCOMPARABLE"
                 peak_profile_evaluable = False
                 peak_profile_concordant = None
-            elif identical_peak_profile_count > 0 or len(pos_configs) == 1:
+            elif identical_peak_profile_count > 0:
                 peak_profile_concordance_status = "ALL_PROFILES_IDENTICAL"
                 peak_profile_evaluable = True
                 peak_profile_concordant = True
@@ -749,13 +786,26 @@ class DisagreementEngine:
                 f"All {len(configurations)} evaluated configurations were excluded due to unverified, "
                 f"synthetic, or missing primary data. Fail-closed policy prevents assigning positive or negative evidence."
             )
-        elif len(pos_configs) > 0 and len(neg_configs) == 0:
+        elif len(pos_configs) == 1 and len(neg_configs) == 0:
+            overall_status = "SINGLE_POSITIVE_OBSERVATION"
+            interp = (
+                f"Single verified positive observation (1 configuration, {len(unique_experiments)} experiment). "
+                f"Cross-configuration reproducibility or parameter sensitivity has not been evaluated."
+            )
+        elif len(pos_configs) >= 2 and len(neg_configs) == 0:
             if all_pairs_config_concordant and peak_profile_concordant is True:
-                overall_status = "ROBUST_POSITIVE_EVIDENCE"
-                interp = (
-                    f"Unanimous positive evidence across {len(pos_configs)} verified configuration(s) "
-                    f"spanning {len(unique_experiments)} independent experiment(s) with identical analytical parameters and peak profiles."
-                )
+                if len(unique_experiments) >= 2:
+                    overall_status = "ROBUST_POSITIVE_EVIDENCE"
+                    interp = (
+                        f"Unanimous positive evidence replicated across {len(pos_configs)} verified configuration(s) "
+                        f"spanning {len(unique_experiments)} independent experiment(s) with identical analytical parameters and peak profiles."
+                    )
+                else:
+                    overall_status = "CONSISTENT_SINGLE_EXPERIMENT_POSITIVE"
+                    interp = (
+                        f"Consistent positive evidence across {len(pos_configs)} analytical configuration(s) from 1 experiment "
+                        f"with identical parameters and peak profiles. Cross-experiment biological reproducibility has not been established."
+                    )
             else:
                 overall_status = "CONCORDANT_POSITIVE_PARAMETER_SENSITIVE"
                 if observed_causes:
@@ -769,14 +819,27 @@ class DisagreementEngine:
                     f"spanning {len(unique_experiments)} independent experiment(s), but analytical parameters or peak profiles vary: {causes_str}. "
                     f"Observations must not be assumed to have identical genomic boundaries or peak multiplicity."
                 )
-        elif len(neg_configs) > 0 and len(pos_configs) == 0:
+        elif len(neg_configs) == 1 and len(pos_configs) == 0:
+            overall_status = "SINGLE_NEGATIVE_OBSERVATION"
+            interp = (
+                f"Single verified non-detection observation (1 configuration, {len(unique_experiments)} experiment). "
+                f"Cross-configuration reproducibility or parameter sensitivity has not been evaluated."
+            )
+        elif len(neg_configs) >= 2 and len(pos_configs) == 0:
             if all_pairs_config_concordant:
-                overall_status = "ROBUST_NO_PEAK_DETECTED"
-                interp = (
-                    f"Unanimous absence of overlapping peaks across {len(neg_configs)} verified configuration(s) "
-                    f"spanning {len(unique_experiments)} independent experiment(s). "
-                    f"Note: Non-detection within the evaluated window does not demonstrate absence of biological regulation or distal enhancer binding."
-                )
+                if len(unique_experiments) >= 2:
+                    overall_status = "ROBUST_NO_PEAK_DETECTED"
+                    interp = (
+                        f"Unanimous absence of overlapping peaks across {len(neg_configs)} verified configuration(s) "
+                        f"spanning {len(unique_experiments)} independent experiment(s). "
+                        f"Note: Non-detection within the evaluated window does not demonstrate absence of biological regulation or distal enhancer binding."
+                    )
+                else:
+                    overall_status = "CONSISTENT_SINGLE_EXPERIMENT_NEGATIVE"
+                    interp = (
+                        f"Consistent non-detection across {len(neg_configs)} configuration(s) from 1 experiment "
+                        f"with identical parameters. Cross-experiment biological reproducibility has not been established."
+                    )
             else:
                 overall_status = "CONCORDANT_NEGATIVE_PARAMETER_SENSITIVE"
                 causes_str = ", ".join(observed_causes) if observed_causes else "PARAMETER_DIFFERENCE"

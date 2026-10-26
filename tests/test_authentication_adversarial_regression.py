@@ -110,9 +110,9 @@ def test_adversarial_synthetic_pair_flags_diagnosis_as_synthetic():
     )
 
     engine = DisagreementEngine()
-    diag = engine.evaluate_pair(cfg_a, cfg_b)
+    diag = engine.evaluate_pair(cfg_a, cfg_b, allow_synthetic_fixtures=True)
 
-    # Diagnoses window discordance geometrically
+    # Diagnoses window discordance geometrically in fixture mode
     assert DisagreementClassification.PROMOTER_WINDOW_DEPENDENT in diag.primary_causes
 
     # Strictly tags diagnosis with synthetic flag

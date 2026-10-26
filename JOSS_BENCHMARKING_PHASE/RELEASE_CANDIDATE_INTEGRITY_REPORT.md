@@ -145,14 +145,31 @@ Where peak profiles differ without verified processing divergence:
 
 ---
 
-## 4. Test Suite and Regression Verification (Tasks 2, 3, and 4)
+## 4. Scientific Semantic Corrections Before PR #3 Merge (Concerns 1, 2, and 3)
 
-### 4.1 Comprehensive Test Suite Summary
-All 164 tracked tests pass cleanly across local development and clean-wheel environments:
-- `tests/test_aggregate_and_peak_regression.py`: **23 / 23 PASSED** (up from 17, adding 6 new regression tests)
+### 4.1 Singleton Positive Evidence and Cross-Experiment Evaluation (Concern 1)
+- **Singleton Positive Classification:** When $N=1$ verified positive configuration is evaluated in `evaluate_set()`, the engine assigns `overall_status = "SINGLE_POSITIVE_OBSERVATION"`, `peak_profile_concordance_status = "SINGLE_OBSERVATION"`, `peak_profile_evaluable = False`, and `peak_profile_concordant = None`. It never claims cross-configuration concordance that was never evaluated.
+- **Singleton Negative Classification:** When $N=1$ verified negative configuration is evaluated, the engine assigns `overall_status = "SINGLE_NEGATIVE_OBSERVATION"`, `peak_profile_concordance_status = "NO_PEAKS"`, `peak_profile_evaluable = False`, and `peak_profile_concordant = True`.
+- **Strict Cross-Experiment Robustness:** `ROBUST_POSITIVE_EVIDENCE` is emitted strictly when $N \ge 2$, `unique_experiments_count >= 2`, analytical parameters match, and physical peak profiles are identical. When $N \ge 2$ configurations derive from a single experiment (`unique_experiments_count == 1`), `CONSISTENT_SINGLE_EXPERIMENT_POSITIVE` is emitted.
+
+### 4.2 Fail-Closed Synthetic Fixture Exclusion (Concern 2)
+- **Production Fail-Closed Contract (`allow_synthetic_fixtures=False`):** Under default settings, any pair containing synthetic or manual test data fails closed immediately (`INSUFFICIENT_COMPARABLE_DATA`, `detection_status_concordance="UNVERIFIED"`, `configuration_concordance=False`, `peak_profile_concordance="INCOMPARABLE"`). Synthetic fixtures can NEVER establish authenticated biological concordance OR discordance.
+- **Fixture Mode Contract (`allow_synthetic_fixtures=True`):** Analytical parameter sensitivity dissection is permitted on simulated test fixtures, but strictly flags `has_synthetic_configuration=True` and appends `SYNTHETIC_TEST_FIXTURE` caveats noting simulated test data.
+
+### 4.3 Incomparable Pairwise Traceability in Aggregate Sets (Concern 3)
+- **Traceability Preservation:** When an aggregate set contains an incomparable pair (e.g. missing coordinates), `evaluate_set()` retains the pairwise diagnosis in `res["diagnoses"]` (with `peak_profile_concordance="INCOMPARABLE"` and `interpretive_uncertainty`). `diagnoses` is NEVER empty when `peak_profile_concordance_status == "SOME_INCOMPARABLE"` or `has_unresolved_interpretation == True`.
+- **Cause Set Integrity:** Non-divergent incomparable pairs do not inject spurious causes into `res["observed_causes"]`.
+
+---
+
+## 5. Test Suite and Regression Verification (Tasks 2, 3, 4, and Final Semantic Gates)
+
+### 5.1 Comprehensive Test Suite Summary
+All 178 tracked tests pass cleanly across local development and clean-wheel environments:
+- `tests/test_aggregate_and_peak_regression.py`: **37 / 37 PASSED** (up from 23, adding 14 new dedicated regression tests)
 - `tests/test_diagnostic_engine_regression.py`: **12 / 12 PASSED**
 - All 19 other tracked test modules: **129 / 129 PASSED**
-- **Total Tracked Test Suite: 164 / 164 PASSED (100%)**
+- **Total Tracked Test Suite: 178 / 178 PASSED (100%)**
 
 ### 4.2 Breakdown of Dedicated Regression Tests
 The 6 new regression tests in `tests/test_aggregate_and_peak_regression.py` explicitly validate Tasks 2 and 3:
@@ -171,8 +188,8 @@ The 6 new regression tests in `tests/test_aggregate_and_peak_regression.py` expl
 2. **Clean Installation:** Reinstalled in isolated environment `C:\Users\rashi\AppData\Local\Temp\tf_patched_wheel_venv` with `--force-reinstall --no-deps`.
 3. **Execution Outside Workspace:** Pytest executed from `C:\Users\rashi\AppData\Local\Temp`:
    - `test_diagnostic_engine_regression.py`: **12 / 12 PASSED**
-   - `test_aggregate_and_peak_regression.py`: **23 / 23 PASSED**
-   - **Combined Clean Wheel Rate: 35 / 35 PASSED (100%)**
+   - `test_aggregate_and_peak_regression.py`: **37 / 37 PASSED**
+   - **Combined Clean Wheel Rate: 49 / 49 PASSED (100%)**
 
 ---
 

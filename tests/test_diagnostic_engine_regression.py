@@ -80,7 +80,10 @@ def test_reg01_synthetic_positive_vs_synthetic_negative_identical_params(engine)
 
 
 def test_reg02_synthetic_positive_vs_synthetic_negative_differing_window(engine):
-    """REG-02: Synthetic positive vs synthetic negative with window difference."""
+    """REG-02: Synthetic positive vs synthetic negative with window difference.
+    Under default production policy, synthetic test fixtures must fail closed as INSUFFICIENT_COMPARABLE_DATA.
+    When allow_synthetic_fixtures=True (fixture mode), parameter sensitivity dissection is permitted
+    with explicit synthetic caveating."""
     tok_a = create_synthetic_provenance_token_for_testing(file_accession="ENCFF_W1", experiment_accession="ENCSR_W", target_tf="E2F1", biosample="MCF-7")
     tok_b = create_synthetic_provenance_token_for_testing(file_accession="ENCFF_W1", experiment_accession="ENCSR_W", target_tf="E2F1", biosample="MCF-7")
     cfg_a = EvidenceConfiguration(
@@ -97,9 +100,17 @@ def test_reg02_synthetic_positive_vs_synthetic_negative_differing_window(engine)
         biosample="MCF-7", is_authenticated=True, auth_status="AUTHENTICATED_PRIMARY_BED",
         evidence_status=EvidenceInterpretation.VERIFIED_NO_PEAK_DETECTED, provenance_token=tok_b, is_synthetic=True
     )
-    diag = engine.evaluate_pair(cfg_a, cfg_b)
-    assert DisagreementClassification.PROMOTER_WINDOW_DEPENDENT in diag.primary_causes
-    assert diag.has_synthetic_configuration is True
+    # Default contract: fails closed on synthetic test fixtures
+    diag_default = engine.evaluate_pair(cfg_a, cfg_b, allow_synthetic_fixtures=False)
+    assert DisagreementClassification.INSUFFICIENT_COMPARABLE_DATA in diag_default.primary_causes
+    assert diag_default.detection_status_concordance == "UNVERIFIED"
+    assert diag_default.has_synthetic_configuration is True
+
+    # Fixture mode: allows analytical comparison on simulated test fixtures
+    diag_fixture = engine.evaluate_pair(cfg_a, cfg_b, allow_synthetic_fixtures=True)
+    assert DisagreementClassification.PROMOTER_WINDOW_DEPENDENT in diag_fixture.primary_causes
+    assert diag_fixture.has_synthetic_configuration is True
+    assert "SYNTHETIC_TEST_FIXTURE" in diag_fixture.causal_attribution_caveat
 
 
 def test_reg03_synthetic_vs_authenticated_observation(engine, auth):
