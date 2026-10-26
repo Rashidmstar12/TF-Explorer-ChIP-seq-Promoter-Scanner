@@ -32,6 +32,7 @@ class DisagreementClassification(str, Enum):
     PEAK_PROCESSING_DEPENDENT = "PEAK_PROCESSING_DEPENDENT"
     INSUFFICIENT_COMPARABLE_DATA = "INSUFFICIENT_COMPARABLE_DATA"
     STABLE_WITHIN_EVALUATED_CHOICES = "STABLE_WITHIN_EVALUATED_CHOICES"
+    UNEXPLAINED_EVIDENCE_DISCORDANCE = "UNEXPLAINED_EVIDENCE_DISCORDANCE"
 
 
 class EvidenceInterpretation(str, Enum):
@@ -546,6 +547,10 @@ class DisagreementDiagnosis:
     has_multiple_covarying_dimensions: bool = False
     covarying_dimensions: List[str] = field(default_factory=list)
     has_synthetic_configuration: bool = False
+    detection_status_concordance: str = "DISCORDANT"
+    configuration_concordance: bool = True
+    peak_profile_concordance: str = "NOT_EVALUATED"
+    interpretive_uncertainty: Optional[str] = None
 
     @property
     def is_multivariate_interaction(self) -> bool:
@@ -573,4 +578,8 @@ class DisagreementDiagnosis:
             "covarying_dimensions": self.covarying_dimensions,
             "interacting_factors": self.covarying_dimensions,
             "has_synthetic_configuration": self.has_synthetic_configuration,
+            "detection_status_concordance": self.detection_status_concordance,
+            "configuration_concordance": self.configuration_concordance,
+            "peak_profile_concordance": self.peak_profile_concordance,
+            "interpretive_uncertainty": self.interpretive_uncertainty,
         }

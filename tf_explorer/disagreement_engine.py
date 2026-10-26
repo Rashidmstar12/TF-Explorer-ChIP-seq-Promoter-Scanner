@@ -23,23 +23,105 @@ from tf_explorer.disagreement_provenance import (
 )
 
 
+
+def classify_peak_profile_concordance(
+    config_a: EvidenceConfiguration,
+    config_b: EvidenceConfiguration,
+    is_both_positive: bool,
+    is_both_negative: bool
+) -> str:
+    """
+    Evaluates physical peak profile concordance between two evidence configurations.
+    Enforces strict comparability rules:
+    - Target TF must match.
+    - Assemblies must be GRCh38.
+    - Sources must be authenticated.
+    - Per-peak coordinate details must be present.
+    """
+    if not (is_both_positive or is_both_negative):
+        return "INCOMPARABLE"
+    if is_both_negative:
+        return "NO_PEAKS"
+
+    # Biological comparability guards
+    if getattr(config_a, "tf_target", None) != getattr(config_b, "tf_target", None):
+        return "INCOMPARABLE"
+    if getattr(config_a, "assembly", "GRCh38") != "GRCh38" or getattr(config_b, "assembly", "GRCh38") != "GRCh38":
+        return "INCOMPARABLE"
+    if getattr(config_a, "assembly", "GRCh38") != getattr(config_b, "assembly", "GRCh38"):
+        return "INCOMPARABLE"
+    # Source authenticity guard: must be authenticated biological data or explicitly synthetic test fixture
+    is_syn_a = bool(getattr(config_a, "is_synthetic", False))
+    is_syn_b = bool(getattr(config_b, "is_synthetic", False))
+    if is_syn_a != is_syn_b:
+        return "INCOMPARABLE"
+    if not is_syn_a and (not getattr(config_a, "is_authenticated", False) or not getattr(config_b, "is_authenticated", False)):
+        return "INCOMPARABLE"
+
+    # Per-peak coordinate extraction
+    peaks_a = getattr(config_a, "all_overlapping_peaks", []) or []
+    peaks_b = getattr(config_b, "all_overlapping_peaks", []) or []
+
+    if not peaks_a and getattr(config_a, "source_peak_start", None) is not None and getattr(config_a, "source_peak_end", None) is not None:
+        peaks_a = [{"chrom": getattr(config_a, "chromosome", "chr"), "start": config_a.source_peak_start, "end": config_a.source_peak_end}]
+    if not peaks_b and getattr(config_b, "source_peak_start", None) is not None and getattr(config_b, "source_peak_end", None) is not None:
+        peaks_b = [{"chrom": getattr(config_b, "chromosome", "chr"), "start": config_b.source_peak_start, "end": config_b.source_peak_end}]
+
+    # If coordinates are missing, conservative return
+    if not peaks_a or not peaks_b:
+        return "INCOMPARABLE"
+
+    if len(peaks_a) != len(peaks_b):
+        return "DIFFERING_PEAK_COUNTS"
+
+    set_a = {(p.get("chrom"), p.get("start"), p.get("end")) for p in peaks_a}
+    set_b = {(p.get("chrom"), p.get("start"), p.get("end")) for p in peaks_b}
+
+    if set_a == set_b:
+        return "IDENTICAL_PEAKS"
+
+    shared = set_a & set_b
+    if shared:
+        return "PARTIALLY_SHARED_PEAKS"
+
+    # Check if intervals overlap each other with boundary offsets
+    overlap_count = 0
+    for pa in peaks_a:
+        ca, sa, ea = pa.get("chrom"), pa.get("start"), pa.get("end")
+        for pb in peaks_b:
+            cb, sb, eb = pb.get("chrom"), pb.get("start"), pb.get("end")
+            if ca == cb and max(sa, sb) < min(ea, eb):
+                overlap_count += 1
+                break
+    if overlap_count == len(peaks_a):
+        return "OVERLAPPING_PEAKS_OFFSET"
+    elif overlap_count > 0:
+        return "PARTIALLY_SHARED_PEAKS"
+    else:
+        return "DISTINCT_PEAKS"
+
+
 class DisagreementEngine:
     """
     Evaluates configurations and identifies structured, reproducible causes of disagreement.
     Operates strictly fail-closed: unauthenticated sources are excluded from positive/negative consensus.
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, allow_synthetic_fixtures: bool = False):
+        self.allow_synthetic_fixtures = allow_synthetic_fixtures
 
     def evaluate_pair(
         self,
         config_a: EvidenceConfiguration,
-        config_b: EvidenceConfiguration
+        config_b: EvidenceConfiguration,
+        allow_synthetic_fixtures: Optional[bool] = None
     ) -> DisagreementDiagnosis:
+        if allow_synthetic_fixtures is None:
+            allow_synthetic_fixtures = self.allow_synthetic_fixtures
         """
-        Diagnoses disagreement between two specific evidence configurations.
-        Fails closed if either configuration is unauthenticated or has contradictory status.
+        Diagnoses agreement or disagreement between two specific evidence configurations.
+        Fails closed if either configuration is unauthenticated, corrupted, or contradictory.
+        Separates detection-status concordance from configuration concordance and peak-profile concordance.
         """
         causes: List[DisagreementClassification] = []
         differing_dimensions: List[DimensionType] = []
@@ -59,6 +141,9 @@ class DisagreementEngine:
         has_provenance_b = config_b.has_valid_provenance() if hasattr(config_b, "has_valid_provenance") else False
         is_synthetic_a = bool(getattr(config_a, "is_synthetic", False))
         is_synthetic_b = bool(getattr(config_b, "is_synthetic", False))
+        is_syn_a = is_synthetic_a or not has_provenance_a
+        is_syn_b = is_synthetic_b or not has_provenance_b
+        is_synthetic_pair = is_syn_a or is_syn_b
 
         # Detect contradictory unauthenticated states (unauthenticated and not synthetic, but asserting positive/negative evidence)
         is_contra_a = (not config_a.is_authenticated and not is_synthetic_a) and (config_a.evidence_status not in unverified_evidence_statuses)
@@ -83,10 +168,14 @@ class DisagreementEngine:
                 smallest_observed_difference=smallest_diff,
                 scientific_explanation="Comparison cannot establish biological or geometric concordance because one or both configurations have contradictory or unverified source status.",
                 causal_attribution_caveat="Unverified, synthetic, or absent source data must never be interpreted as positive or negative evidence.",
-                has_synthetic_configuration=is_synthetic_a or is_synthetic_b
+                has_synthetic_configuration=is_synthetic_a or is_synthetic_b,
+                detection_status_concordance="UNVERIFIED",
+                configuration_concordance=False,
+                peak_profile_concordance="INCOMPARABLE",
+                interpretive_uncertainty="Unauthenticated configuration asserting unverified observation status."
             )
 
-        # Detect genuine unverified / unavailable source data (excluding synthetic test configurations)
+        # Detect genuine unverified / unavailable source data
         is_unauth_a = ((not config_a.is_authenticated and not is_synthetic_a) or (config_a.evidence_status in unverified_evidence_statuses))
         is_unauth_b = ((not config_b.is_authenticated and not is_synthetic_b) or (config_b.evidence_status in unverified_evidence_statuses))
 
@@ -137,22 +226,23 @@ class DisagreementEngine:
                     "TF-Explorer fails closed on unverified sources."
                 ),
                 causal_attribution_caveat="Unverified, synthetic, or absent source data must never be interpreted as positive or negative evidence.",
-                has_synthetic_configuration=getattr(config_a, "is_synthetic", False) or getattr(config_b, "is_synthetic", False)
+                has_synthetic_configuration=getattr(config_a, "is_synthetic", False) or getattr(config_b, "is_synthetic", False),
+                detection_status_concordance="UNVERIFIED",
+                configuration_concordance=False,
+                peak_profile_concordance="INCOMPARABLE",
+                interpretive_uncertainty="Unverified, missing, or tampered source data."
             )
 
-        # Check for synthetic / manual configurations without valid biological provenance
-        is_syn_a = getattr(config_a, "is_synthetic", False) or not has_provenance_a
-        is_syn_b = getattr(config_b, "is_synthetic", False) or not has_provenance_b
-
-        # Synthetic configurations claiming concordant evidence cannot establish biological consensus
-        if (is_syn_a or is_syn_b) and (config_a.evidence_status == config_b.evidence_status):
+        # 2. Asymmetric Provenance Check: Authentic Biological Observation vs Synthetic/Unverified
+        # An authenticated observation can NEVER be compared against a synthetic mock or unverified configuration.
+        if not allow_synthetic_fixtures and (has_provenance_a != has_provenance_b):
             causes.append(DisagreementClassification.INSUFFICIENT_COMPARABLE_DATA)
             differing_dimensions.append(DimensionType.DATA_AVAILABILITY)
             missing_info = []
-            if is_syn_a:
-                missing_info.append(f"{config_a.config_id} (Synthetic/manual configuration excluded from biological consensus ({config_a.synthetic_note or 'synthetic mock'}))")
-            if is_syn_b:
-                missing_info.append(f"{config_b.config_id} (Synthetic/manual configuration excluded from biological consensus ({config_b.synthetic_note or 'synthetic mock'}))")
+            if not has_provenance_a:
+                missing_info.append(f"{config_a.config_id} (Unverified/synthetic configuration cannot be compared with authentic evidence)")
+            if not has_provenance_b:
+                missing_info.append(f"{config_b.config_id} (Unverified/synthetic configuration cannot be compared with authentic evidence)")
             smallest_diff = f"Evidence unverified, synthetic, or missing in: {'; '.join(missing_info)}"
             return DisagreementDiagnosis(
                 primary_causes=causes,
@@ -162,75 +252,128 @@ class DisagreementEngine:
                 evidence_b=config_b.evidence_status,
                 differing_dimensions=differing_dimensions,
                 smallest_observed_difference=smallest_diff,
-                scientific_explanation="Synthetic or manually asserted test configurations cannot establish biological concordance. TF-Explorer fails closed on non-biological evidence.",
-                causal_attribution_caveat="Synthetic test configurations must never be interpreted as verified biological evidence.",
-                has_synthetic_configuration=True
+                scientific_explanation="Comparison cannot establish biological concordance or discordance because authenticated observations cannot be compared against unverified or synthetic test data.",
+                causal_attribution_caveat="Authenticated biological evidence cannot be combined with synthetic mock data.",
+                has_synthetic_configuration=True,
+                detection_status_concordance="UNVERIFIED",
+                configuration_concordance=False,
+                peak_profile_concordance="INCOMPARABLE",
+                interpretive_uncertainty="Asymmetric provenance: comparison of authenticated observation against unverified/synthetic data."
             )
 
-        # 2. Both configurations are authenticated and verified. Check for observation status agreement.
-        if config_a.evidence_status == config_b.evidence_status:
-            # Full observation concordance (both verified positive or both verified no peak)
+        # 3. Detect Internal Contradictions on Identical Sources/Parameters
+        same_exp = bool(
+            config_a.encode_experiment_accession
+            and config_a.encode_experiment_accession == config_b.encode_experiment_accession
+        )
+        same_file = (config_a.encode_file_accession == config_b.encode_file_accession)
+        same_gene = (config_a.gene_symbol.strip().upper() == config_b.gene_symbol.strip().upper() if config_a.gene_symbol and config_b.gene_symbol else True)
+        same_tss = (config_a.canonical_tss == config_b.canonical_tss and config_a.strand == config_b.strand)
+        same_win = (
+            config_a.window_start_offset == config_b.window_start_offset
+            and config_a.window_end_offset == config_b.window_end_offset
+            and config_a.promoter_upstream == config_b.promoter_upstream
+            and config_a.promoter_downstream == config_b.promoter_downstream
+        )
+        same_bio = (
+            config_a.biosample.strip().lower() == config_b.biosample.strip().lower()
+            if config_a.biosample and config_b.biosample else True
+        )
+        treat_match, _ = compare_treatment_contexts(config_a.treatment_context, config_b.treatment_context)
+        mod_match, _ = compare_genetic_modifications(config_a.genetic_modification_context, config_b.genetic_modification_context)
+        status_discordant = (config_a.evidence_status != config_b.evidence_status)
+
+        # If identical parameters assert opposite evidence statuses -> Contradictory Data Integrity Inconsistency!
+        if same_exp and same_file and same_gene and same_tss and same_win and same_bio and treat_match and mod_match and status_discordant:
+            causes.append(DisagreementClassification.INSUFFICIENT_COMPARABLE_DATA)
+            differing_dimensions.append(DimensionType.DATA_AVAILABILITY)
             return DisagreementDiagnosis(
-                primary_causes=[DisagreementClassification.STABLE_WITHIN_EVALUATED_CHOICES],
+                primary_causes=causes,
                 config_a_id=config_a.config_id,
                 config_b_id=config_b.config_id,
                 evidence_a=config_a.evidence_status,
                 evidence_b=config_b.evidence_status,
-                differing_dimensions=[],
-                smallest_observed_difference="None (Concordant evidence status)",
-                scientific_explanation=f"Both configurations yield concordant {config_a.evidence_status.value}.",
-                has_synthetic_configuration=is_syn_a or is_syn_b
+                differing_dimensions=differing_dimensions,
+                smallest_observed_difference="Contradictory evidence statuses asserted on identical experimental accession, file, and coordinates.",
+                scientific_explanation="Comparison cannot proceed because identical experimental and coordinate parameters assert mutually contradictory observation statuses. This indicates an internal data-integrity inconsistency or corrupted record.",
+                causal_attribution_caveat="Primary data cannot support conflicting binding observations for identical inputs.",
+                has_synthetic_configuration=is_synthetic_pair,
+                detection_status_concordance="DISCORDANT",
+                configuration_concordance=True,
+                peak_profile_concordance="INCOMPARABLE",
+                interpretive_uncertainty="Internal data-integrity inconsistency: conflicting observation statuses for identical source and coordinate inputs."
             )
 
-        # 3. Disagreement exists between authenticated configurations A and B!
-        # Dissect each differing dimension:
+        # 4. Check for Synthetic / Manual Configurations
+        # Under production fail-closed policy, synthetic configurations can NEVER establish biological concordance OR discordance.
+        if not allow_synthetic_fixtures and is_synthetic_pair:
+            causes.append(DisagreementClassification.INSUFFICIENT_COMPARABLE_DATA)
+            differing_dimensions.append(DimensionType.DATA_AVAILABILITY)
+            missing_info = []
+            if is_syn_a:
+                missing_info.append(f"{config_a.config_id} (Synthetic/manual configuration excluded from biological consensus ({getattr(config_a, 'synthetic_note', None) or 'synthetic mock'}))")
+            if is_syn_b:
+                missing_info.append(f"{config_b.config_id} (Synthetic/manual configuration excluded from biological consensus ({getattr(config_b, 'synthetic_note', None) or 'synthetic mock'}))")
+            smallest_diff = f"Evidence unverified, synthetic, or missing in: {'; '.join(missing_info)}"
+            return DisagreementDiagnosis(
+                primary_causes=causes,
+                config_a_id=config_a.config_id,
+                config_b_id=config_b.config_id,
+                evidence_a=config_a.evidence_status,
+                evidence_b=config_b.evidence_status,
+                differing_dimensions=differing_dimensions,
+                smallest_observed_difference=smallest_diff,
+                scientific_explanation="Synthetic or manually asserted test configurations cannot establish biological concordance or discordance. TF-Explorer fails closed on non-biological evidence.",
+                causal_attribution_caveat="Synthetic test configurations must never be interpreted as verified biological evidence.",
+                has_synthetic_configuration=True,
+                detection_status_concordance="UNVERIFIED",
+                configuration_concordance=False,
+                peak_profile_concordance="INCOMPARABLE",
+                interpretive_uncertainty="Synthetic configurations cannot establish biological consensus."
+            )
 
+        # 5. Multi-Attribute Dimensional Dissection
         # Dimension A: Transcript TSS Geometry
         tss_diff = abs(config_a.canonical_tss - config_b.canonical_tss)
-        if tss_diff > 0 or (config_a.transcript_id != config_b.transcript_id):
+        transcript_differs = tss_diff > 0 or (config_a.transcript_id != config_b.transcript_id)
+        if transcript_differs:
             differing_dimensions.append(DimensionType.TRANSCRIPT_TSS)
-            causes.append(DisagreementClassification.TRANSCRIPT_GEOMETRY_DEPENDENT)
             covarying_dims.append(f"TSS displacement: {tss_diff:,} bp ({config_a.transcript_id} vs {config_b.transcript_id})")
 
         # Dimension B: Promoter Window Boundaries
-        window_differs = (
-            config_a.window_start_offset != config_b.window_start_offset
-            or config_a.window_end_offset != config_b.window_end_offset
-            or config_a.promoter_upstream != config_b.promoter_upstream
-            or config_a.promoter_downstream != config_b.promoter_downstream
-        )
+        window_differs = not same_win
         if window_differs:
             differing_dimensions.append(DimensionType.PROMOTER_WINDOW)
-            causes.append(DisagreementClassification.PROMOTER_WINDOW_DEPENDENT)
             win_desc_a = f"[{config_a.window_start_offset}, {config_a.window_end_offset}]"
             win_desc_b = f"[{config_b.window_start_offset}, {config_b.window_end_offset}]"
             covarying_dims.append(f"Window definition: {win_desc_a} vs {win_desc_b}")
 
-        # Dimension C: Peak Processing Tiers (Same experiment, different processing files)
-        same_exp = (
-            config_a.encode_experiment_accession
-            and config_a.encode_experiment_accession == config_b.encode_experiment_accession
+        # Dimension C: Peak Processing Tiers (Same experiment, different processing files or tiers)
+        file_differs = (
+            bool(config_a.encode_file_accession and config_b.encode_file_accession)
+            and config_a.encode_file_accession != config_b.encode_file_accession
         )
-        file_differs = config_a.encode_file_accession != config_b.encode_file_accession
-
-        if same_exp and file_differs:
+        tier_differs = (
+            bool(getattr(config_a, "processing_tier", None) and getattr(config_b, "processing_tier", None))
+            and config_a.processing_tier != config_b.processing_tier
+        )
+        processing_differs = same_exp and (file_differs or tier_differs)
+        if processing_differs:
             differing_dimensions.append(DimensionType.PEAK_PROCESSING)
-            causes.append(DisagreementClassification.PEAK_PROCESSING_DEPENDENT)
-            covarying_dims.append(f"Processing tier/file: {config_a.encode_file_accession} vs {config_b.encode_file_accession}")
+            diff_proc = []
+            if file_differs:
+                diff_proc.append(f"file: {config_a.encode_file_accession} vs {config_b.encode_file_accession}")
+            if tier_differs:
+                diff_proc.append(f"tier: {config_a.processing_tier} vs {config_b.processing_tier}")
+            covarying_dims.append(f"Processing tier/file: {'; '.join(diff_proc)}")
 
         # Dimension D: Biological Context (Biosample, Treatment, Genetic Modification)
-        bio_differs = (
-            config_a.biosample.strip().lower() != config_b.biosample.strip().lower()
-            if config_a.biosample and config_b.biosample else False
-        )
-        treat_match, _ = compare_treatment_contexts(config_a.treatment_context, config_b.treatment_context)
+        bio_differs = not same_bio
         treat_differs = not treat_match
-        mod_match, _ = compare_genetic_modifications(config_a.genetic_modification_context, config_b.genetic_modification_context)
         mod_differs = not mod_match
-
-        if bio_differs or treat_differs or mod_differs:
+        context_differs = bio_differs or treat_differs or mod_differs
+        if context_differs:
             differing_dimensions.append(DimensionType.BIOLOGICAL_CONTEXT)
-            causes.append(DisagreementClassification.BIOLOGICAL_CONTEXT_DIFFERENT)
             diff_ctx = []
             if bio_differs:
                 diff_ctx.append(f"biosample: {config_a.biosample} vs {config_b.biosample}")
@@ -240,53 +383,181 @@ class DisagreementEngine:
                 diff_ctx.append(f"genetic_modification: {config_a.genetic_modification_context} vs {config_b.genetic_modification_context}")
             covarying_dims.append("; ".join(diff_ctx))
 
-        # Dimension E: Experiment Assay Discordance (Independent experiments in identical context)
-        exp_differs = (
+        # Dimension E: Independent Experiment Assay
+        exp_differs = bool(
             config_a.encode_experiment_accession
             and config_b.encode_experiment_accession
             and config_a.encode_experiment_accession != config_b.encode_experiment_accession
         )
-        if exp_differs and not bio_differs and not treat_differs and not mod_differs:
+        if exp_differs and not context_differs:
             differing_dimensions.append(DimensionType.EXPERIMENT_ASSAY)
-            causes.append(DisagreementClassification.EXPERIMENT_DISCORDANT)
             covarying_dims.append(
                 f"Independent experiments in identical context: {config_a.encode_experiment_accession} vs {config_b.encode_experiment_accession}"
             )
 
-        # 4. Formulate Scientific Explanations and Caveats
-        has_multiple_dims = len(differing_dimensions) > 1
+        analytical_config_concordant = not (
+            transcript_differs or window_differs or processing_differs or context_differs
+        )
 
-        if not causes:
-            causes.append(DisagreementClassification.EXPERIMENT_DISCORDANT)
-            smallest_diff = "Unspecified experimental or assay variance"
-            explanation = "Evidence disagrees across configurations without isolated coordinate or metadata shift."
+        # 6. Peak Profile & Detection Status Concordance
+        is_both_positive = (
+            config_a.evidence_status in (EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION, EvidenceInterpretation.POSITIVE_EVIDENCE)
+            and config_b.evidence_status in (EvidenceInterpretation.VERIFIED_POSITIVE_OBSERVATION, EvidenceInterpretation.POSITIVE_EVIDENCE)
+        )
+        is_both_negative = (
+            config_a.evidence_status in (EvidenceInterpretation.VERIFIED_NO_PEAK_DETECTED, EvidenceInterpretation.NEGATIVE_EVIDENCE)
+            and config_b.evidence_status in (EvidenceInterpretation.VERIFIED_NO_PEAK_DETECTED, EvidenceInterpretation.NEGATIVE_EVIDENCE)
+        )
+        is_status_concordant = (config_a.evidence_status == config_b.evidence_status) or is_both_positive or is_both_negative
+        detection_status_concordance = (
+            "BOTH_POSITIVE" if is_both_positive else ("BOTH_NEGATIVE" if is_both_negative else "DISCORDANT")
+        )
+
+        # Physical Peak Profile Concordance via rigorous helper
+        peak_profile_concordance = classify_peak_profile_concordance(
+            config_a, config_b, is_both_positive, is_both_negative
+        )
+
+        # Overall configuration concordance
+        # Analytical parameters must match. When independent experiments share identical context,
+        # agreement requires concordant physical peak profiles.
+        if exp_differs and not context_differs:
+            configuration_concordance = analytical_config_concordant and is_status_concordant and (peak_profile_concordance in ("IDENTICAL_PEAKS", "NO_PEAKS"))
         else:
-            smallest_diff = covarying_dims[0] if len(covarying_dims) == 1 else " | ".join(covarying_dims)
-            explanation_parts = []
-            for cause in causes:
-                if cause == DisagreementClassification.TRANSCRIPT_GEOMETRY_DEPENDENT:
-                    explanation_parts.append(
-                        f"Transcript TSS shift of {tss_diff:,} bp alters promoter coordinate boundaries relative to the peak interval."
-                    )
-                elif cause == DisagreementClassification.PROMOTER_WINDOW_DEPENDENT:
-                    explanation_parts.append(
-                        f"Promoter window boundary parameter changes exclude or include the peak interval."
-                    )
-                elif cause == DisagreementClassification.BIOLOGICAL_CONTEXT_DIFFERENT:
-                    explanation_parts.append(
-                        f"Biological cell line, treatment perturbation, or genetic tag differs between configurations."
-                    )
-                elif cause == DisagreementClassification.PEAK_PROCESSING_DEPENDENT:
-                    explanation_parts.append(
-                        f"Peak calling threshold, IDR tier, or replication processing differs within the same experiment."
-                    )
-                elif cause == DisagreementClassification.EXPERIMENT_DISCORDANT:
-                    explanation_parts.append(
-                        f"Independent ChIP-seq experiments in the same biological context yield discordant peak detection."
-                    )
-            explanation = " ".join(explanation_parts)
+            configuration_concordance = analytical_config_concordant
 
-        # Add mandatory attribution caveat
+        # 7. Formulate Classification, Explanations, and Caveats
+        has_multiple_dims = len(differing_dimensions) > 1
+        interpretive_uncertainty: Optional[str] = None
+
+        if is_status_concordant:
+            # If all parameters match and peaks match, observation is truly stable across evaluated choices:
+            if configuration_concordance and peak_profile_concordance in ("IDENTICAL_PEAKS", "NO_PEAKS"):
+                causes.append(DisagreementClassification.STABLE_WITHIN_EVALUATED_CHOICES)
+                if exp_differs and not context_differs:
+                    smallest_diff = "None (Concordant evidence status and identical peak profile across independent experiments)"
+                    explanation = (
+                        f"Both configurations yield concordant {config_a.evidence_status.value} "
+                        f"replicated across independent experiments ({config_a.encode_experiment_accession} vs {config_b.encode_experiment_accession})."
+                    )
+                else:
+                    smallest_diff = "None (Concordant evidence status and identical parameters)"
+                    explanation = f"Both configurations yield concordant {config_a.evidence_status.value}."
+                if is_both_negative:
+                    caveats.append(
+                        "Concordant non-detection indicates no overlapping peak was called in the evaluated window. "
+                        "It does not establish biological non-binding across unassayed contexts or transcriptional inactivity."
+                    )
+            else:
+                # Detection status is concordant, BUT parameters or peak profiles differ!
+                # We separately record the differing dimensions as the primary causes of difference:
+                if transcript_differs:
+                    causes.append(DisagreementClassification.TRANSCRIPT_GEOMETRY_DEPENDENT)
+                if window_differs:
+                    causes.append(DisagreementClassification.PROMOTER_WINDOW_DEPENDENT)
+                if processing_differs:
+                    causes.append(DisagreementClassification.PEAK_PROCESSING_DEPENDENT)
+                if context_differs:
+                    causes.append(DisagreementClassification.BIOLOGICAL_CONTEXT_DIFFERENT)
+                if exp_differs and not context_differs:
+                    causes.append(DisagreementClassification.EXPERIMENT_DISCORDANT)
+                
+                # If configuration parameters matched, but physical peaks differ:
+                # Task 3: ONLY assign PEAK_PROCESSING_DEPENDENT when relevant processing file/metadata difference is established!
+                if not causes:
+                    if peak_profile_concordance in ("DISTINCT_PEAKS", "DIFFERING_PEAK_COUNTS", "PARTIALLY_SHARED_PEAKS", "OVERLAPPING_PEAKS_OFFSET"):
+                        # Parameters matched without verified processing divergence: causal mechanism is unresolved.
+                        smallest_diff = f"Peak profile difference: {peak_profile_concordance} (unverified processing divergence)"
+                        explanation = (
+                            f"Concordant {config_a.evidence_status.value} observed across configurations, "
+                            f"but physical peak profiles differ ({peak_profile_concordance}). "
+                            f"Configurations share identical experimental accession and analytical parameters "
+                            f"without verified processing metadata divergence; causal mechanism remains unresolved."
+                        )
+                        interpretive_uncertainty = (
+                            f"Peak profile difference ({peak_profile_concordance}) observed without verified "
+                            f"processing divergence or metadata shift; causal explanation remains unresolved."
+                        )
+                    elif peak_profile_concordance == "INCOMPARABLE":
+                        smallest_diff = "Peak profile: INCOMPARABLE"
+                        explanation = (
+                            f"Concordant {config_a.evidence_status.value} observed across configurations, "
+                            f"but physical peak profiles could not be evaluated or compared (INCOMPARABLE). "
+                            f"Peak coordinate details or metadata may be missing."
+                        )
+                        interpretive_uncertainty = (
+                            "Peak profiles are incomparable across configurations; geometric concordance cannot be evaluated."
+                        )
+                    else:
+                        smallest_diff = "None (Concordant evidence status and identical parameters)"
+                        explanation = f"Concordant {config_a.evidence_status.value} observed across configurations."
+                else:
+                    smallest_diff = covarying_dims[0] if len(covarying_dims) == 1 else (" | ".join(covarying_dims) if covarying_dims else f"Peak profile: {peak_profile_concordance}")
+                    explanation = (
+                        f"Concordant {config_a.evidence_status.value} observed across configurations, "
+                        f"but configuration parameters or peak profiles differ in: {smallest_diff}. "
+                        f"Peak profile concordance: {peak_profile_concordance}."
+                    )
+                    interpretive_uncertainty = (
+                        f"Detection status is concordant ({detection_status_concordance}), "
+                        f"but analytical parameters or peak profiles vary across evaluated choices."
+                    )
+        else:
+            # Discordant evidence statuses (one positive, one negative)
+            if transcript_differs:
+                causes.append(DisagreementClassification.TRANSCRIPT_GEOMETRY_DEPENDENT)
+            if window_differs:
+                causes.append(DisagreementClassification.PROMOTER_WINDOW_DEPENDENT)
+            if processing_differs:
+                causes.append(DisagreementClassification.PEAK_PROCESSING_DEPENDENT)
+            if context_differs:
+                causes.append(DisagreementClassification.BIOLOGICAL_CONTEXT_DIFFERENT)
+            if exp_differs and not context_differs:
+                causes.append(DisagreementClassification.EXPERIMENT_DISCORDANT)
+
+            # Fallback logic for discordant statuses without isolated modeled cause:
+            if not causes:
+                if exp_differs:
+                    causes.append(DisagreementClassification.EXPERIMENT_DISCORDANT)
+                    smallest_diff = f"Independent experiments in identical context: {config_a.encode_experiment_accession} vs {config_b.encode_experiment_accession}"
+                    explanation = "Independent ChIP-seq experiments in the same biological context yield discordant peak detection."
+                else:
+                    causes.append(DisagreementClassification.UNEXPLAINED_EVIDENCE_DISCORDANCE)
+                    smallest_diff = "Unexplained evidence discordance within the same experiment"
+                    explanation = "Evidence disagrees across configurations from the same experiment without an isolated coordinate or modeled metadata shift."
+                    interpretive_uncertainty = "Discordant observation statuses cannot be explained by standard coordinate or metadata differences."
+            else:
+                smallest_diff = covarying_dims[0] if len(covarying_dims) == 1 else " | ".join(covarying_dims)
+                explanation_parts = []
+                for cause in causes:
+                    if cause == DisagreementClassification.TRANSCRIPT_GEOMETRY_DEPENDENT:
+                        explanation_parts.append(
+                            f"Transcript TSS shift of {tss_diff:,} bp alters promoter coordinate boundaries relative to the peak interval."
+                        )
+                    elif cause == DisagreementClassification.PROMOTER_WINDOW_DEPENDENT:
+                        explanation_parts.append(
+                            "Promoter window boundary parameter changes exclude or include the peak interval."
+                        )
+                    elif cause == DisagreementClassification.BIOLOGICAL_CONTEXT_DIFFERENT:
+                        explanation_parts.append(
+                            "Biological cell line, treatment perturbation, or genetic tag differs between configurations."
+                        )
+                    elif cause == DisagreementClassification.PEAK_PROCESSING_DEPENDENT:
+                        explanation_parts.append(
+                            "Peak calling threshold, IDR tier, or replication processing differs within the same experiment."
+                        )
+                    elif cause == DisagreementClassification.EXPERIMENT_DISCORDANT:
+                        explanation_parts.append(
+                            "Independent ChIP-seq experiments in the same biological context yield discordant peak detection."
+                        )
+                explanation = " ".join(explanation_parts)
+
+        # 8. Add Scientific Attribution Caveats
+        if is_both_negative:
+            caveats.append(
+                'Concordant non-detection indicates no overlapping peak was called in the evaluated window. '
+                'It does not establish biological non-binding across unassayed contexts or transcriptional inactivity.'
+            )
         if DisagreementClassification.PROMOTER_WINDOW_DEPENDENT in causes:
             caveats.append(
                 "A change in promoter overlap is an analytical coordinate finding and does not establish differential biological regulation."
@@ -304,6 +575,19 @@ class DisagreementEngine:
                 "MULTIPLE_COVARYING_DIMENSIONS: More than one analytical or biological parameter varies simultaneously. "
                 "Causal attribution to a single driver requires holding orthogonal dimensions constant."
             )
+        if peak_profile_concordance == "DIFFERING_PEAK_COUNTS":
+            caveats.append(
+                "PEAK_PROFILE_DIFFERENCE: Overlapping peak counts differ between configurations despite matching detection status."
+            )
+        elif peak_profile_concordance == "DISTINCT_PEAKS":
+            caveats.append(
+                "DISTINCT_PEAK_COORDINATES: Overlapping peaks represent distinct physical genomic coordinates."
+            )
+
+        if is_synthetic_pair:
+            caveats.append(
+                "SYNTHETIC_TEST_FIXTURE: Analytical comparison on simulated test data; does not establish biological concordance or discordance."
+            )
 
         caveat_str = " | ".join(caveats) if caveats else "Evidence reflects evaluated analytical parameter choices."
 
@@ -319,16 +603,29 @@ class DisagreementEngine:
             causal_attribution_caveat=caveat_str,
             has_multiple_covarying_dimensions=has_multiple_dims,
             covarying_dimensions=covarying_dims,
-            has_synthetic_configuration=getattr(config_a, "is_synthetic", False) or getattr(config_b, "is_synthetic", False)
+            has_synthetic_configuration=is_synthetic_pair,
+            detection_status_concordance=detection_status_concordance,
+            configuration_concordance=configuration_concordance,
+            peak_profile_concordance=peak_profile_concordance,
+            interpretive_uncertainty=interpretive_uncertainty
         )
 
     def evaluate_set(
         self,
-        configurations: List[EvidenceConfiguration]
+        configurations: List[EvidenceConfiguration],
+        allow_synthetic_fixtures: Optional[bool] = None
     ) -> Dict[str, Any]:
+        if allow_synthetic_fixtures is None:
+            allow_synthetic_fixtures = self.allow_synthetic_fixtures
         """
         Evaluates a set of evidence configurations, performing all pairwise comparisons
         and synthesizing the global consensus and disagreement landscape.
+        Distinguishes:
+        - Detection-status concordance.
+        - Configuration concordance.
+        - Peak-profile concordance.
+        - Unresolved interpretation.
+        - Invalid or unauthenticated evidence.
         """
         if not configurations:
             return {
@@ -339,6 +636,13 @@ class DisagreementEngine:
                 "excluded_configurations_count": 0,
                 "unique_experiments_count": 0,
                 "status_concordant": True,
+                "detection_status_concordant": True,
+                "configuration_concordant": True,
+                "peak_profile_concordant": True,
+                "peak_profile_evaluable": False,
+                "peak_profile_concordance_status": "EMPTY_SET",
+                "has_unresolved_interpretation": False,
+                "has_invalid_or_unauthenticated_evidence": False,
                 "observed_causes": [],
                 "diagnoses": [],
                 "scientific_interpretation": "No configurations provided for evaluation."
@@ -346,7 +650,7 @@ class DisagreementEngine:
 
         valid_configs = [
             c for c in configurations
-            if c.is_verified_biological_observation()
+            if c.is_verified_biological_observation() or (allow_synthetic_fixtures and getattr(c, "is_synthetic", False) and c.is_verified_observation())
         ]
         excluded_configs = [c for c in configurations if c not in valid_configs]
 
@@ -368,36 +672,182 @@ class DisagreementEngine:
         diagnoses: List[DisagreementDiagnosis] = []
         observed_causes_set: Set[DisagreementClassification] = set()
 
+        all_pairs_config_concordant = True
+        has_unresolved = False
+        has_invalid = len(excluded_configs) > 0
+
+        # Dedicated peak-profile tracking across evaluated pairs
+        differing_peak_profile_count = 0
+        incomparable_peak_profile_count = 0
+        identical_peak_profile_count = 0
+        no_peaks_count = 0
+
         for i in range(len(configurations)):
             for j in range(i + 1, len(configurations)):
-                diag = self.evaluate_pair(configurations[i], configurations[j])
-                # Only record non-stable diagnoses in detailed list
-                if DisagreementClassification.STABLE_WITHIN_EVALUATED_CHOICES not in diag.primary_causes:
+                diag = self.evaluate_pair(configurations[i], configurations[j], allow_synthetic_fixtures=allow_synthetic_fixtures)
+
+                if DisagreementClassification.INSUFFICIENT_COMPARABLE_DATA in diag.primary_causes:
+                    has_invalid = True
+                if (DisagreementClassification.UNEXPLAINED_EVIDENCE_DISCORDANCE in diag.primary_causes 
+                    or bool(diag.interpretive_uncertainty)):
+                    has_unresolved = True
+
+                if not diag.configuration_concordance:
+                    all_pairs_config_concordant = False
+
+                if diag.peak_profile_concordance in ("DISTINCT_PEAKS", "DIFFERING_PEAK_COUNTS", "PARTIALLY_SHARED_PEAKS", "OVERLAPPING_PEAKS_OFFSET"):
+                    differing_peak_profile_count += 1
+                elif diag.peak_profile_concordance == "INCOMPARABLE":
+                    if diag.detection_status_concordance in ("BOTH_POSITIVE", "UNVERIFIED"):
+                        incomparable_peak_profile_count += 1
+                elif diag.peak_profile_concordance == "IDENTICAL_PEAKS":
+                    identical_peak_profile_count += 1
+                elif diag.peak_profile_concordance == "NO_PEAKS":
+                    no_peaks_count += 1
+
+                # Identify causes other than pure STABLE
+                differing_causes = [
+                    c for c in diag.primary_causes 
+                    if c != DisagreementClassification.STABLE_WITHIN_EVALUATED_CHOICES
+                ]
+
+                has_divergence = (
+                    len(differing_causes) > 0
+                    or not diag.configuration_concordance
+                    or diag.peak_profile_concordance in (
+                        "DISTINCT_PEAKS",
+                        "DIFFERING_PEAK_COUNTS",
+                        "PARTIALLY_SHARED_PEAKS",
+                        "OVERLAPPING_PEAKS_OFFSET",
+                        "INCOMPARABLE",
+                    )
+                    or diag.detection_status_concordance in ("DISCORDANT", "UNVERIFIED")
+                    or bool(diag.interpretive_uncertainty)
+                )
+
+                if has_divergence:
                     diagnoses.append(diag)
-                    for c in diag.primary_causes:
+                    for c in differing_causes:
                         observed_causes_set.add(c)
 
-        # Global synthesis
         observed_causes = [c.value for c in sorted(observed_causes_set, key=lambda x: x.value)]
+
+        is_detection_concordant = bool(
+            (len(pos_configs) > 0 and len(neg_configs) == 0) or
+            (len(neg_configs) > 0 and len(pos_configs) == 0)
+        )
+
+        # Determine aggregate peak-profile concordance and evaluability across the set:
+        if not configurations:
+            peak_profile_concordance_status = "EMPTY_SET"
+            peak_profile_evaluable = False
+            peak_profile_concordant = True
+        elif len(pos_configs) == 0 and len(neg_configs) == 0:
+            peak_profile_concordance_status = "SOME_INCOMPARABLE" if incomparable_peak_profile_count > 0 else "NO_PEAKS"
+            peak_profile_evaluable = False
+            peak_profile_concordant = None
+        elif len(pos_configs) == 0 and len(neg_configs) == 1:
+            peak_profile_concordance_status = "NO_PEAKS"
+            peak_profile_evaluable = False
+            peak_profile_concordant = True
+        elif len(pos_configs) == 0 and len(neg_configs) > 1:
+            peak_profile_concordance_status = "NO_PEAKS"
+            peak_profile_evaluable = False
+            peak_profile_concordant = True
+        elif len(pos_configs) == 1 and len(neg_configs) == 0:
+            peak_profile_concordance_status = "SINGLE_OBSERVATION"
+            peak_profile_evaluable = False
+            peak_profile_concordant = None
+        elif len(pos_configs) > 0:
+            if differing_peak_profile_count > 0:
+                peak_profile_concordance_status = "PROFILES_DIFFER"
+                peak_profile_evaluable = (incomparable_peak_profile_count == 0)
+                peak_profile_concordant = False
+            elif incomparable_peak_profile_count > 0:
+                peak_profile_concordance_status = "SOME_INCOMPARABLE"
+                peak_profile_evaluable = False
+                peak_profile_concordant = None
+            elif identical_peak_profile_count > 0:
+                peak_profile_concordance_status = "ALL_PROFILES_IDENTICAL"
+                peak_profile_evaluable = True
+                peak_profile_concordant = True
+            else:
+                peak_profile_concordance_status = "SOME_INCOMPARABLE"
+                peak_profile_evaluable = False
+                peak_profile_concordant = None
+        else:
+            peak_profile_concordance_status = "SOME_INCOMPARABLE" if incomparable_peak_profile_count > 0 else "NO_PEAKS"
+            peak_profile_evaluable = False
+            peak_profile_concordant = None
 
         if not valid_configs:
             overall_status = "INSUFFICIENT_DATA_FAIL_CLOSED"
             interp = (
-                f"All {len(configurations)} evaluated configurations were excluded due to unverified "
-                f"or missing primary data. Fail-closed policy prevents assigning positive or negative evidence."
+                f"All {len(configurations)} evaluated configurations were excluded due to unverified, "
+                f"synthetic, or missing primary data. Fail-closed policy prevents assigning positive or negative evidence."
             )
-        elif len(pos_configs) > 0 and len(neg_configs) == 0:
-            overall_status = "ROBUST_POSITIVE_EVIDENCE"
+        elif len(pos_configs) == 1 and len(neg_configs) == 0:
+            overall_status = "SINGLE_POSITIVE_OBSERVATION"
             interp = (
-                f"Unanimous positive evidence across {len(pos_configs)} verified configuration(s) "
-                f"spanning {len(unique_experiments)} independent experiment(s)."
+                f"Single verified positive observation (1 configuration, {len(unique_experiments)} experiment). "
+                f"Cross-configuration reproducibility or parameter sensitivity has not been evaluated."
             )
-        elif len(neg_configs) > 0 and len(pos_configs) == 0:
-            overall_status = "ROBUST_NO_PEAK_DETECTED"
+        elif len(pos_configs) >= 2 and len(neg_configs) == 0:
+            if all_pairs_config_concordant and peak_profile_concordant is True:
+                if len(unique_experiments) >= 2:
+                    overall_status = "ROBUST_POSITIVE_EVIDENCE"
+                    interp = (
+                        f"Unanimous positive evidence replicated across {len(pos_configs)} verified configuration(s) "
+                        f"spanning {len(unique_experiments)} independent experiment(s) with identical analytical parameters and peak profiles."
+                    )
+                else:
+                    overall_status = "CONSISTENT_SINGLE_EXPERIMENT_POSITIVE"
+                    interp = (
+                        f"Consistent positive evidence across {len(pos_configs)} analytical configuration(s) from 1 experiment "
+                        f"with identical parameters and peak profiles. Cross-experiment biological reproducibility has not been established."
+                    )
+            else:
+                overall_status = "CONCORDANT_POSITIVE_PARAMETER_SENSITIVE"
+                if observed_causes:
+                    causes_str = ", ".join(observed_causes)
+                elif peak_profile_concordance_status == "SOME_INCOMPARABLE":
+                    causes_str = "INCOMPARABLE_PEAK_PROFILES"
+                else:
+                    causes_str = "PEAK_PROFILE_DIFFERENCE"
+                interp = (
+                    f"Concordant positive evidence observed across {len(pos_configs)} verified configuration(s) "
+                    f"spanning {len(unique_experiments)} independent experiment(s), but analytical parameters or peak profiles vary: {causes_str}. "
+                    f"Observations must not be assumed to have identical genomic boundaries or peak multiplicity."
+                )
+        elif len(neg_configs) == 1 and len(pos_configs) == 0:
+            overall_status = "SINGLE_NEGATIVE_OBSERVATION"
             interp = (
-                f"Unanimous absence of overlapping peaks across {len(neg_configs)} verified configuration(s) "
-                f"spanning {len(unique_experiments)} independent experiment(s)."
+                f"Single verified non-detection observation (1 configuration, {len(unique_experiments)} experiment). "
+                f"Cross-configuration reproducibility or parameter sensitivity has not been evaluated."
             )
+        elif len(neg_configs) >= 2 and len(pos_configs) == 0:
+            if all_pairs_config_concordant:
+                if len(unique_experiments) >= 2:
+                    overall_status = "ROBUST_NO_PEAK_DETECTED"
+                    interp = (
+                        f"Unanimous absence of overlapping peaks across {len(neg_configs)} verified configuration(s) "
+                        f"spanning {len(unique_experiments)} independent experiment(s). "
+                        f"Note: Non-detection within the evaluated window does not demonstrate absence of biological regulation or distal enhancer binding."
+                    )
+                else:
+                    overall_status = "CONSISTENT_SINGLE_EXPERIMENT_NEGATIVE"
+                    interp = (
+                        f"Consistent non-detection across {len(neg_configs)} configuration(s) from 1 experiment "
+                        f"with identical parameters. Cross-experiment biological reproducibility has not been established."
+                    )
+            else:
+                overall_status = "CONCORDANT_NEGATIVE_PARAMETER_SENSITIVE"
+                causes_str = ", ".join(observed_causes) if observed_causes else "PARAMETER_DIFFERENCE"
+                interp = (
+                    f"Concordant non-detection across {len(neg_configs)} verified configuration(s) "
+                    f"spanning {len(unique_experiments)} independent experiment(s), evaluated under differing analytical contexts: {causes_str}. "
+                    f"Non-detection within evaluated promoter windows does not establish biological inactivity."
+                )
         else:
             overall_status = "DISCORDANT_EVIDENCE"
             top_causes = ", ".join(observed_causes) if observed_causes else "MULTIPLE_FACTORS"
@@ -408,9 +858,7 @@ class DisagreementEngine:
             )
 
         if excluded_configs:
-            interp += f" Note: {len(excluded_configs)} configuration(s) were excluded fail-closed due to unverified data."
-
-        is_concordant = bool(len(diagnoses) == 0 and len(valid_configs) > 0)
+            interp += f" Note: {len(excluded_configs)} configuration(s) were excluded fail-closed due to unverified or synthetic data."
 
         return {
             "overall_status": overall_status,
@@ -419,7 +867,14 @@ class DisagreementEngine:
             "negative_configurations_count": len(neg_configs),
             "excluded_configurations_count": len(excluded_configs),
             "unique_experiments_count": len(unique_experiments),
-            "status_concordant": is_concordant,
+            "status_concordant": is_detection_concordant,
+            "detection_status_concordant": is_detection_concordant,
+            "configuration_concordant": bool(all_pairs_config_concordant and len(valid_configs) > 0),
+            "peak_profile_concordant": peak_profile_concordant,
+            "peak_profile_evaluable": peak_profile_evaluable,
+            "peak_profile_concordance_status": peak_profile_concordance_status,
+            "has_unresolved_interpretation": has_unresolved,
+            "has_invalid_or_unauthenticated_evidence": has_invalid,
             "observed_causes": observed_causes,
             "diagnoses": [d.to_dict() for d in diagnoses],
             "scientific_interpretation": interp

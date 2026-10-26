@@ -24,11 +24,12 @@ class DisagreementMatrix:
     Decouples configuration space from independent biological experiments to prevent multiverse fallacy.
     """
 
-    def __init__(self, gene_symbol: str, tf_target: str):
+    def __init__(self, gene_symbol: str, tf_target: str, allow_synthetic_fixtures: bool = False):
         self.gene_symbol = gene_symbol.upper()
         self.tf_target = tf_target.upper()
         self.configurations: List[EvidenceConfiguration] = []
-        self.engine = DisagreementEngine()
+        self.allow_synthetic_fixtures = allow_synthetic_fixtures
+        self.engine = DisagreementEngine(allow_synthetic_fixtures=allow_synthetic_fixtures)
         self._analysis_cache: Optional[Dict[str, Any]] = None
 
     def add_configuration(self, config: EvidenceConfiguration) -> None:
@@ -44,7 +45,7 @@ class DisagreementMatrix:
     def analyze(self) -> Dict[str, Any]:
         """Runs the cause-of-disagreement engine across all configurations in the matrix."""
         if self._analysis_cache is None:
-            self._analysis_cache = self.engine.evaluate_set(self.configurations)
+            self._analysis_cache = self.engine.evaluate_set(self.configurations, allow_synthetic_fixtures=self.allow_synthetic_fixtures)
         return self._analysis_cache
 
     def get_summary_statistics(self) -> Dict[str, Any]:

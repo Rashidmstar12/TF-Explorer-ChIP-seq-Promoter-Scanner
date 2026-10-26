@@ -44,7 +44,7 @@ class TestPhase4BDisagreementExplorer:
 
     @pytest.fixture
     def engine(self):
-        return DisagreementEngine()
+        return DisagreementEngine(allow_synthetic_fixtures=True)
 
     # Challenge 1: Different transcripts with nearby TSS positions
     def test_challenge_1_nearby_tss_positions(self, engine):

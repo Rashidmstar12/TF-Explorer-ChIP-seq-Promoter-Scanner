@@ -68,7 +68,7 @@ def main():
         evidence_status=EvidenceInterpretation.POSITIVE_EVIDENCE,
     )
     
-    diagnosis = engine.evaluate_pair(cfg_narrow, cfg_standard)
+    diagnosis = engine.evaluate_pair(cfg_narrow, cfg_standard, allow_synthetic_fixtures=True)
     
     print(f"Narrow promoter window [-1000, +200]: {cfg_narrow.evidence_status.value}")
     print(f"Standard promoter window [-2000, +500]: {cfg_standard.evidence_status.value}")
